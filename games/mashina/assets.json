@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "note": "Every 3D object is loaded through this file. 'available: false' means the GLB does not exist yet and the procedural fallback shape is used (render/carModel.ts, render/tileBuilder.ts). Drop the optimised GLB (see scripts/optimize-models.mjs) at the path, set available to true, nothing else changes. GLB conventions: units = metres, +z is the nose, y = 0 on the ground, wheels as nodes named wheel_fl / wheel_fr / wheel_rl / wheel_rr (optional).",
+  "limits": { "carTriangles": 40000, "carTexture": 2048, "pedestrianTriangles": 8000 },
+  "cars": {
+    "sedan": { "glb": "/models/mashina/sedan.glb", "available": false, "scale": 1, "yaw": 0 },
+    "krossover": { "glb": "/models/mashina/krossover.glb", "available": false, "scale": 1, "yaw": 0 },
+    "sport": { "glb": "/models/mashina/sport.glb", "available": false, "scale": 1, "yaw": 0 }
+  },
+  "traffic": {
+    "truck": { "glb": "/models/mashina/truck.glb", "available": false, "scale": 1, "yaw": 0 },
+    "van": { "glb": "/models/mashina/van.glb", "available": false, "scale": 1, "yaw": 0 }
+  },
+  "people": { "pedestrian": { "glb": "/models/mashina/pedestrian.glb", "available": false, "scale": 1, "yaw": 0 } },
+  "landmarks": { "registon": { "glb": "/models/mashina/registon.glb", "available": false, "scale": 1, "yaw": 0 } }
+}

@@ -1,0 +1,5 @@
+# Docker/nginx/shell fayllari har doim LF bo'lsin (Windows'da CRLF konteynerni buzadi)
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.conf text eol=lf
+*.yml text eol=lf

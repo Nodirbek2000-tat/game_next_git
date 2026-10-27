@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "_izoh": "GLB modellar shu yerda ulanadi. Hozircha hammasi null: o‘yin ichidagi protsedura (kod bilan yasalgan) 3D mevalar ishlatiladi. url — /models/ninja/... yo‘li (public/ papkasi). scale — model radiusiga ko‘paytma. half — kesilgan yarim meva (kesim yuzasi pastga, -Y), bo‘lmasa protsedura yarim ishlatiladi.",
+  "fruits": {
+    "tarvuz": { "whole": null, "half": null, "scale": 1 },
+    "apelsin": { "whole": null, "half": null, "scale": 1 },
+    "olma": { "whole": null, "half": null, "scale": 1 },
+    "banan": { "whole": null, "half": null, "scale": 1 },
+    "ananas": { "whole": null, "half": null, "scale": 1 },
+    "kivi": { "whole": null, "half": null, "scale": 1 },
+    "anor": { "whole": null, "half": null, "scale": 1 },
+    "qovun": { "whole": null, "half": null, "scale": 1 }
+  },
+  "bomb": { "whole": null, "half": null, "scale": 1 }
+}

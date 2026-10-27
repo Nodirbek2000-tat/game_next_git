@@ -1,0 +1,168 @@
+@import "tailwindcss";
+
+/* ---------- Design tokens: "Neon Registon" ---------- */
+:root {
+  --bg: #f6f4ff;
+  --bg-2: #ece8ff;
+  --fg: #19133a;
+  --muted: #5a5380;
+  --card: rgba(255, 255, 255, 0.78);
+  --card-solid: #ffffff;
+  --line: rgba(60, 40, 140, 0.14);
+  --brand: #7c3aed;
+  --brand-fg: #ffffff;
+  --aqua: #0e7490;
+  --hot: #db2777;
+  --glow: rgba(124, 58, 237, 0.28);
+  --pattern: rgba(90, 60, 190, 0.1);
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #0a0817;
+  --bg-2: #130f2b;
+  --fg: #f1eeff;
+  --muted: #a9a3cf;
+  --card: rgba(30, 24, 66, 0.62);
+  --card-solid: #171233;
+  --line: rgba(170, 150, 255, 0.18);
+  --brand: #8b5cf6;
+  --brand-fg: #ffffff;
+  --aqua: #22d3ee;
+  --hot: #f472b6;
+  --glow: rgba(139, 92, 246, 0.45);
+  --pattern: rgba(170, 150, 255, 0.12);
+  color-scheme: dark;
+}
+/* No-JS fallback: follow the system theme until the inline script sets data-theme. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --bg: #0a0817;
+    --bg-2: #130f2b;
+    --fg: #f1eeff;
+    --muted: #a9a3cf;
+    --card: rgba(30, 24, 66, 0.62);
+    --card-solid: #171233;
+    --line: rgba(170, 150, 255, 0.18);
+    --brand: #8b5cf6;
+    --aqua: #22d3ee;
+    --hot: #f472b6;
+    --glow: rgba(139, 92, 246, 0.45);
+    --pattern: rgba(170, 150, 255, 0.12);
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg2: var(--bg-2);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-card: var(--card);
+  --color-solid: var(--card-solid);
+  --color-line: var(--line);
+  --color-brand: var(--brand);
+  --color-brand-fg: var(--brand-fg);
+  --color-aqua: var(--aqua);
+  --color-hot: var(--hot);
+  --font-sans: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-display-face), var(--font-body), ui-sans-serif, system-ui, sans-serif;
+}
+
+html {
+  font-size: 16px;
+  scroll-behavior: smooth;
+  scroll-padding-top: 5rem;
+}
+/* Big screens / smart boards: scale the whole rem-based UI up. */
+@media (min-width: 1920px) { html { font-size: 18px; } }
+@media (min-width: 2560px) { html { font-size: 22px; } }
+@media (min-width: 3400px) { html { font-size: 28px; } }
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus-visible {
+  outline: 3px solid var(--aqua);
+  outline-offset: 3px;
+  border-radius: 0.5rem;
+}
+
+/* ---------- Reusable looks ---------- */
+.glass {
+  background: var(--card);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.text-gradient {
+  background: linear-gradient(100deg, var(--brand), var(--aqua) 55%, var(--hot));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.glow-btn {
+  background: linear-gradient(110deg, #7c3aed, #a855f7 45%, #ec4899);
+  box-shadow: 0 10px 34px -8px var(--glow), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+.glow-btn:hover { filter: brightness(1.1); }
+
+/* Soft single-accent atmosphere behind the entry screen. */
+.aurora {
+  background:
+    radial-gradient(40rem 26rem at 18% 8%, color-mix(in srgb, var(--brand) 26%, transparent), transparent 70%),
+    radial-gradient(34rem 24rem at 88% 22%, color-mix(in srgb, var(--hot) 16%, transparent), transparent 70%);
+}
+
+/* Entry cards: tinted halo + a single play button, both driven by --c (game colour). */
+.game-card { transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.3s, border-color 0.3s; }
+.game-card:hover, .game-card:focus-visible {
+  transform: translateY(-6px);
+  border-color: color-mix(in srgb, var(--c) 55%, var(--line));
+  box-shadow: 0 30px 60px -30px var(--c);
+}
+.game-card:active { transform: scale(0.985); }
+.game-card-glow { background: var(--c); opacity: 0.22; transition: opacity 0.3s; }
+.game-card:hover .game-card-glow, .game-card:focus-visible .game-card-glow { opacity: 0.45; }
+.game-card-go { background: linear-gradient(110deg, #7c3aed, #ec4899); box-shadow: 0 10px 26px -10px var(--glow); transition: transform 0.3s; }
+.game-card:hover .game-card-go { transform: scale(1.12); }
+
+/* Gentle entrance for the entry screen (skipped by the reduced-motion rule below). */
+@keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+.rise { animation: rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* ---------- Theme toggle icon state ---------- */
+.theme-icon { display: none; }
+:root:not([data-theme-pref]) .theme-icon-system,
+:root[data-theme-pref="system"] .theme-icon-system,
+:root[data-theme-pref="light"] .theme-icon-light,
+:root[data-theme-pref="dark"] .theme-icon-dark { display: block; }
+
+/* ---------- Animations ---------- */
+@keyframes float-y { 0%, 100% { transform: translateY(0) rotate(-2deg); } 50% { transform: translateY(-10px) rotate(2deg); } }
+@keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(7px); } }
+@keyframes ripple { 0% { transform: scale(0.3); opacity: 0.8; } 100% { transform: scale(1.6); opacity: 0; } }
+@keyframes scan { 0% { transform: translateY(0); opacity: 0; } 15% { opacity: 1; } 85% { opacity: 1; } 100% { transform: translateY(78px); opacity: 0; } }
+@keyframes pulse-ring { 0% { transform: scale(0.8); opacity: 0.9; } 100% { transform: scale(1.5); opacity: 0; } }
+@keyframes wave-l { 0%, 25% { transform: rotate(0deg); } 55%, 100% { transform: rotate(150deg); } }
+@keyframes wave-r { 0%, 25% { transform: rotate(0deg); } 55%, 100% { transform: rotate(-150deg); } }
+
+.anim-float { animation: float-y 5s ease-in-out infinite; }
+.anim-bob { animation: bob 2.6s ease-in-out infinite; }
+.anim-ripple { animation: ripple 2.8s ease-out infinite; transform-origin: center; transform-box: fill-box; }
+.anim-scan { animation: scan 2.4s ease-in-out infinite; }
+.anim-pulse-ring { animation: pulse-ring 1.8s ease-out infinite; transform-origin: center; transform-box: fill-box; }
+.anim-arm-l { animation: wave-l 3.2s ease-in-out infinite; transform-origin: 38px 34px; }
+.anim-arm-r { animation: wave-r 3.2s ease-in-out infinite; transform-origin: 62px 34px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

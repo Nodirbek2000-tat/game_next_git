@@ -1,0 +1,43 @@
+{
+  "_comment": "Every visual/audio object of Baliq ovi is resolved through this file. Set \"present\": true after the file is added under public/. While a file is missing (all of them now) the game builds good-looking procedural geometry / synthesised sound instead.",
+  "version": 1,
+  "root": "/models/baliq-ovi/",
+  "models": {
+    "bridge": { "path": "bridge.glb", "present": false },
+    "rod": { "path": "rod.glb", "present": false },
+    "float": { "path": "float.glb", "present": false },
+    "angler": { "path": "angler.glb", "present": false },
+    "tree": { "path": "tree.glb", "present": false },
+    "rock": { "path": "rock.glb", "present": false },
+    "reed": { "path": "reed.glb", "present": false },
+    "weed": { "path": "weed.glb", "present": false },
+    "mountains": { "path": "mountains.glb", "present": false },
+    "boot": { "path": "boot.glb", "present": false },
+    "bottle": { "path": "bottle.glb", "present": false },
+    "fish.zogora": { "path": "fish/zogora.glb", "present": false },
+    "fish.sazan": { "path": "fish/sazan.glb", "present": false },
+    "fish.amur": { "path": "fish/amur.glb", "present": false },
+    "fish.dongpeshona": { "path": "fish/dongpeshona.glb", "present": false },
+    "fish.chortan": { "path": "fish/chortan.glb", "present": false },
+    "fish.laqqa": { "path": "fish/laqqa.glb", "present": false },
+    "fish.forel": { "path": "fish/forel.glb", "present": false },
+    "fish.sudak": { "path": "fish/sudak.glb", "present": false },
+    "fish.ilonbosh": { "path": "fish/ilonbosh.glb", "present": false },
+    "fish.karas": { "path": "fish/karas.glb", "present": false },
+    "fish.oltin": { "path": "fish/oltin.glb", "present": false }
+  },
+  "textures": {
+    "waterNormal": { "path": "textures/water-normal.jpg", "present": false },
+    "wood": { "path": "textures/wood.jpg", "present": false },
+    "clouds": { "path": "textures/clouds.png", "present": false }
+  },
+  "sounds": {
+    "birds": { "path": "/audio/baliq-ovi/birds.ogg", "present": false },
+    "water": { "path": "/audio/baliq-ovi/water.ogg", "present": false },
+    "reel": { "path": "/audio/baliq-ovi/reel-click.ogg", "present": false },
+    "strain": { "path": "/audio/baliq-ovi/line-strain.ogg", "present": false },
+    "splash": { "path": "/audio/baliq-ovi/splash.ogg", "present": false },
+    "rain": { "path": "/audio/baliq-ovi/rain.ogg", "present": false },
+    "wind": { "path": "/audio/baliq-ovi/wind.ogg", "present": false }
+  }
+}
