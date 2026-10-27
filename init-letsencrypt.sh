@@ -29,25 +29,45 @@ fi
 
 mkdir -p "$DATA/certbot-www" "$LIVE"
 
+make_dummy() {
+  mkdir -p "$LIVE"
+  openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
+    -keyout "$LIVE/privkey.pem" -out "$LIVE/fullchain.pem" \
+    -subj "/CN=$DOMAIN" 2>/dev/null
+  chmod 600 "$LIVE/privkey.pem"
+  echo dummy > "$LIVE/.dummy"
+}
+
 echo "### 1/4 Vaqtinchalik (self-signed) sertifikat — nginx ishga tushishi uchun"
-openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
-  -keyout "$LIVE/privkey.pem" -out "$LIVE/fullchain.pem" \
-  -subj "/CN=$DOMAIN" 2>/dev/null
-chmod 600 "$LIVE/privkey.pem"
-echo dummy > "$LIVE/.dummy"
+make_dummy
 
 echo "### 2/4 nginx ni ishga tushirish"
-docker compose up -d nginx
-sleep 3
+docker compose up -d --force-recreate nginx
+# nginx haqiqatda ishlab, 80-portda javob berguncha kutamiz
+ok=0
+for _ in $(seq 1 30); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: $DOMAIN" "http://127.0.0.1/.well-known/acme-challenge/ping" || true)
+  if [ "$code" = "404" ] || [ "$code" = "200" ]; then ok=1; break; fi
+  sleep 1
+done
+if [ "$ok" != "1" ]; then
+  echo "XATO: nginx 80-portda javob bermayapti. Loglar:"
+  docker compose logs nginx --tail 20
+  exit 1
+fi
 
 echo "### 3/4 Vaqtinchalik sertifikatni o'chirib, haqiqiysini so'rash"
 rm -rf "$DATA/letsencrypt/live/$DOMAIN" "$DATA/letsencrypt/archive/$DOMAIN" "$DATA/letsencrypt/renewal/$DOMAIN.conf"
 DOMAIN_ARGS=()
 for d in "${DOMAINS[@]}"; do DOMAIN_ARGS+=(-d "$d"); done
 
-docker compose run --rm --entrypoint certbot certbot certonly --webroot -w /var/www/certbot \
+if ! docker compose run --rm --entrypoint certbot certbot certonly --webroot -w /var/www/certbot \
   "${STAGING_ARG[@]}" "${DOMAIN_ARGS[@]}" \
-  --cert-name "$DOMAIN" --email "$EMAIL" --agree-tos --no-eff-email --non-interactive --rsa-key-size 4096
+  --cert-name "$DOMAIN" --email "$EMAIL" --agree-tos --no-eff-email --non-interactive --rsa-key-size 4096; then
+  echo "XATO: sertifikat olinmadi. nginx yiqilmasligi uchun vaqtinchalik sertifikat qaytarildi."
+  make_dummy
+  exit 1
+fi
 
 echo "### 4/4 nginx ni qayta yuklash va certbot siklini yoqish"
 docker compose exec nginx nginx -t
