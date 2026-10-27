@@ -14,6 +14,10 @@ export interface DetectorInfo {
 export interface DetectorOptions {
   poseModel: PoseModelName;
   hands: boolean;
+  /** how many bodies the pose model follows (default 4; crowd / Bog‘cha games ask for 5) */
+  numPoses?: number;
+  /** MediaPipe pose confidence (detection / presence / tracking), default 0.5; crowd games lower it for small bodies */
+  minConf?: number;
   /** try a Web Worker first (falls back to the main thread when the worker cannot start) */
   preferWorker: boolean;
   onProgress?: (pct: number, label: string) => void;
@@ -153,7 +157,7 @@ class WorkerBackend implements Backend {
       };
       worker.addEventListener("message", onMsg);
       worker.addEventListener("error", onErr);
-      worker.postMessage({ type: "init", origin: location.origin, pose: opts.poseModel, hands: opts.hands });
+      worker.postMessage({ type: "init", origin: location.origin, pose: opts.poseModel, hands: opts.hands, numPoses: opts.numPoses ?? 4, conf: opts.minConf ?? 0.5 });
     });
   }
 
@@ -242,7 +246,7 @@ class MainBackend implements Backend {
       }
     };
     const poseBuf = await fetchWithProgress(`/models/pose_landmarker_${opts.poseModel}.task`, "Tana modeli", 15, 45, opts.onProgress);
-    const pose = (await make(vision.PoseLandmarker, poseBuf, { numPoses: 4, minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5 }, "pose")) as unknown as Landmarker;
+    const pose = (await make(vision.PoseLandmarker, poseBuf, { numPoses: opts.numPoses ?? 4, minPoseDetectionConfidence: opts.minConf ?? 0.5, minPosePresenceConfidence: opts.minConf ?? 0.5, minTrackingConfidence: opts.minConf ?? 0.5 }, "pose")) as unknown as Landmarker;
     let hand: Landmarker | null = null;
     if (opts.hands) {
       const handBuf = await fetchWithProgress("/models/hand_landmarker.task", "Qo‘l modeli", 65, 25, opts.onProgress);

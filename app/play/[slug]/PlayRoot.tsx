@@ -9,7 +9,7 @@ import { PlayStage } from "@/engine/ui/PlayStage";
 import { PLAY_CSS } from "@/engine/ui/styles";
 import { getGame } from "@/lib/games";
 
-function Notice({ icon, title, text }: { icon: string; title: string; text: string }) {
+function Notice({ icon, title, text, back = "/oyinlar" }: { icon: string; title: string; text: string; back?: string }) {
   return (
     <div className="hk-root" data-testid="play-notice">
       <style>{PLAY_CSS}</style>
@@ -19,7 +19,7 @@ function Notice({ icon, title, text }: { icon: string; title: string; text: stri
           <h2>{title}</h2>
           <p className="hk-lead">{text}</p>
           <div className="hk-row" style={{ marginTop: 18 }}>
-            <Link className="hk-btn" href="/oyinlar">
+            <Link className="hk-btn" href={back}>
               ← Boshqa o‘yinlar
             </Link>
             <Link className="hk-btn ghost" href="/">
@@ -50,7 +50,7 @@ export default function PlayRoot({ slug }: { slug: string }) {
       players: q.get("players") === "2" ? 2 : 1,
       worker: q.get("worker") !== "0",
       query: q,
-      onExit: () => router.push("/oyinlar"),
+      onExit: () => router.push(info.audience === "bogcha" ? "/bogcha" : "/oyinlar"),
     });
     // the runtime is an external system (camera, WebGL, models) created once per slug
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -62,7 +62,7 @@ export default function PlayRoot({ slug }: { slug: string }) {
   }, [slug, info, load, router]);
 
   if (!info) return <Notice icon="🧭" title="O‘yin topilmadi" text="Bunday o‘yin yo‘q. Quyidagi ro‘yxatdan boshqa o‘yinni tanlang." />;
-  if (!load) return <Notice icon={info.icon} title={`${info.title} — tez orada!`} text="Bu o‘yin ustida ishlayapmiz. Tez orada shu yerda o‘ynay olasiz. Hozircha boshqa o‘yinlarni sinab ko‘ring." />;
+  if (!load) return <Notice icon={info.icon} title={`${info.title} — tez orada!`} text="Bu o‘yin ustida ishlayapmiz. Tez orada shu yerda o‘ynay olasiz. Hozircha boshqa o‘yinlarni sinab ko‘ring." back={info.audience === "bogcha" ? "/bogcha" : "/oyinlar"} />;
   if (!runtime) return <div style={{ position: "fixed", inset: 0, background: "#07060f" }} />;
   return <PlayStage runtime={runtime} />;
 }

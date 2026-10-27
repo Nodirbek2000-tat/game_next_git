@@ -4,7 +4,7 @@
  * the MediaPipe wasm loader uses importScripts(). Everything is self-hosted (/mediapipe, /models);
  * nothing is loaded from a CDN. Camera frames arrive as ImageBitmaps and never leave the device.
  *
- * Protocol (main -> worker):  {type:'init', origin, pose:'lite'|'full', hands:boolean}
+ * Protocol (main -> worker):  {type:'init', origin, pose:'lite'|'full', hands:boolean, numPoses?:number, conf?:number}
  *                             {type:'frame', id, bitmap, ts, hands:boolean}
  *                             {type:'setHands', on:boolean}  {type:'close'}
  *                             {type:'confidence', det, pres, track}   (lower thresholds when the picture is dark)
@@ -18,6 +18,8 @@ let hand = null;
 let fileset = null;
 const delegate = { pose: "GPU", hand: "GPU" };
 let lastTs = 0;
+let NUM_POSES = 4;
+let CONF = 0.5;
 
 function post(msg, transfer) {
   self.postMessage(msg, transfer || []);
@@ -59,7 +61,7 @@ async function create(Cls, buffer, extra, key) {
 
 async function loadPose(which) {
   const buf = await fetchBuffer(ORIGIN + "/models/pose_landmarker_" + which + ".task", "Tana modeli", 15, 45);
-  const p = await create(Vision.PoseLandmarker, buf, { numPoses: 4, minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5 }, "pose");
+  const p = await create(Vision.PoseLandmarker, buf, { numPoses: NUM_POSES, minPoseDetectionConfidence: CONF, minPosePresenceConfidence: CONF, minTrackingConfidence: CONF }, "pose");
   try { if (pose) pose.close(); } catch (e) { /* ignore */ }
   pose = p;
 }
@@ -81,6 +83,8 @@ self.onmessage = async (e) => {
   try {
     if (m.type === "init") {
       ORIGIN = m.origin;
+      NUM_POSES = Math.max(1, Math.min(6, m.numPoses | 0 || 4));
+      CONF = typeof m.conf === "number" ? m.conf : 0.5;
       importScripts(ORIGIN + "/mediapipe/vision_bundle.js");
       post({ type: "progress", label: "Dvigatel", pct: 5 });
       // eslint-disable-next-line no-undef

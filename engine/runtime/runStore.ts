@@ -21,6 +21,9 @@ export interface ResultsUI {
   /** 2 player games: index of the winner, -1 = draw, null = single player */
   winner: number | null;
   players: { score: number; label: string }[] | null;
+  /** crowd (Bog‘cha) game: "Barakalla!" screen with the stars of every child */
+  crowd: boolean;
+  kids: NonNullable<GameResult["kids"]> | null;
 }
 
 export interface DebugUI {

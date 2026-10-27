@@ -106,4 +106,13 @@ export const PLAY_CSS = `
 .hk-debug{position:absolute;left:10px;bottom:64px;z-index:20;padding:8px 10px;border-radius:10px;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;background:rgba(0,0,0,.72);color:#9ff;pointer-events:none;max-width:min(420px,90vw)}
 .hk-debug b{color:#fff}
 @media (max-width:700px){.hk-hud{flex-wrap:wrap}.hk-hcard{min-width:80px;padding:7px 10px}.hk-hcard b{font-size:20px}.hk-hbar{width:110px}}
+/* Bog‘cha (crowd) games: huge buttons for smart boards, no small print */
+.hk-kids .hk-btn{min-width:min(360px,80vw);min-height:92px;padding:22px 44px;font-size:30px}
+.hk-kids h1{font-size:clamp(40px,7vw,72px)}
+.hk-kids .hk-lead{font-size:clamp(20px,3vw,30px)}
+.hk-kids .hk-stars{font-size:clamp(36px,6vw,64px);letter-spacing:4px;line-height:1.25;word-break:break-all}
+.hk-kidrow{display:flex;flex-wrap:wrap;gap:12px;justify-content:center;margin:14px 0 24px}
+.hk-kidrow>div{padding:10px 16px;border-radius:20px;background:rgba(255,255,255,.08);border:3px solid var(--kc,#fff);min-width:96px}
+.hk-kidrow b{display:block;font-size:44px;line-height:1.1}
+.hk-kidrow span{display:block;font-size:22px;letter-spacing:2px}
 `;

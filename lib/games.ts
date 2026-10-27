@@ -3,6 +3,8 @@
 
 export type BodyPart = "qollar" | "oyoqlar" | "butun-tana";
 export type Difficulty = "oson" | "orta" | "qiyin";
+/** "bogcha" = kindergarten games (3–6 yosh, 2–5 bola birga, skanersiz); "umumiy" = the main catalogue. */
+export type Audience = "bogcha" | "umumiy";
 
 export interface GameInfo {
   slug: string;
@@ -15,6 +17,9 @@ export interface GameInfo {
   bodyParts: BodyPart[];
   difficulty: Difficulty;
   kidsFriendly: boolean;
+  audience: Audience;
+  /** not listed anywhere (home, /oyinlar, /bogcha, sitemap); still playable by URL (demo / test games) */
+  hidden?: boolean;
   twoPlayers: boolean;
   /** Score thresholds for 1, 2 and 3 stars. */
   stars: [number, number, number];
@@ -41,6 +46,7 @@ export const ALL_GAMES: GameInfo[] = [
     bodyParts: ["qollar"],
     difficulty: "orta",
     kidsFriendly: true,
+    audience: "umumiy",
     twoPlayers: true,
     stars: [600, 1500, 3000],
     color: "#28aadc",
@@ -62,6 +68,7 @@ export const ALL_GAMES: GameInfo[] = [
     bodyParts: ["oyoqlar", "qollar"],
     difficulty: "qiyin",
     kidsFriendly: true,
+    audience: "umumiy",
     twoPlayers: false,
     stars: [2500, 5000, 8000],
     color: "#ffaa28",
@@ -77,6 +84,7 @@ export const ALL_GAMES: GameInfo[] = [
     bodyParts: ["qollar"],
     difficulty: "oson",
     kidsFriendly: true,
+    audience: "umumiy",
     twoPlayers: true,
     stars: [250, 600, 1100],
     color: "#ff3c5a",
@@ -93,6 +101,7 @@ export const ALL_GAMES: GameInfo[] = [
     bodyParts: ["qollar", "butun-tana"],
     difficulty: "orta",
     kidsFriendly: true,
+    audience: "umumiy",
     twoPlayers: false,
     stars: [2500, 5500, 9000],
     color: "#ff5a3c",
@@ -108,6 +117,7 @@ export const ALL_GAMES: GameInfo[] = [
     bodyParts: ["butun-tana"],
     difficulty: "oson",
     kidsFriendly: true,
+    audience: "umumiy",
     twoPlayers: false,
     stars: [60, 110, 160],
     color: "#34d399",
@@ -123,6 +133,7 @@ export const ALL_GAMES: GameInfo[] = [
     bodyParts: ["butun-tana"],
     difficulty: "orta",
     kidsFriendly: true,
+    audience: "umumiy",
     twoPlayers: false,
     stars: [1500, 3500, 6000],
     color: "#ff8c28",
@@ -138,16 +149,105 @@ export const ALL_GAMES: GameInfo[] = [
     bodyParts: ["butun-tana"],
     difficulty: "orta",
     kidsFriendly: true,
+    audience: "umumiy",
     twoPlayers: true,
     stars: [800, 1400, 2000],
     color: "#ffaa5a",
   },
+  // ---------------------------------------------------------------- Bog‘cha (3–6 yosh): 2–5 bola birga, skanersiz
+  {
+    slug: "pufakchalar",
+    title: "Pufakchalar",
+    icon: "🫧",
+    short: "Pufakchalarni qo‘lingiz bilan yoring — yulduz yig‘iladi.",
+    description: "Ekranda rangli pufakchalar uchadi. Bolalar qo‘llari bilan tegib yorishadi, yulduzlar hammaga birga yig‘iladi.",
+    tip: "Qo‘llarni ko‘tarib pufakchalarga tegining",
+    rules: ["Qo‘l bilan pufakchaga tegsangiz — yoriladi.", "Har bir pufakcha — bitta yulduz.", "Yutqazish yo‘q, hammaga yulduz!"],
+    bodyParts: ["qollar"],
+    difficulty: "oson",
+    kidsFriendly: true,
+    audience: "bogcha",
+    twoPlayers: false,
+    stars: [15, 35, 60],
+    color: "#39c5ff",
+  },
+  {
+    slug: "qotib-qol",
+    title: "Qotib qol!",
+    icon: "🎵",
+    short: "Musiqa chalinsa — raqsga, to‘xtasa — qotib qoling!",
+    description: "Musiqa chalinganda bolalar raqsga tushadi. Musiqa to‘xtaganda hamma qotib qoladi. Qimirlamaganlarga yulduz beriladi.",
+    tip: "Musiqa to‘xtasa — qimirlamang",
+    rules: ["Musiqa chalinsa — raqsga tushing.", "Musiqa to‘xtasa — qotib qoling.", "Qotib qolgan bola yulduz oladi."],
+    bodyParts: ["butun-tana"],
+    difficulty: "oson",
+    kidsFriendly: true,
+    audience: "bogcha",
+    twoPlayers: false,
+    stars: [15, 35, 60],
+    color: "#ff7ad9",
+  },
+  {
+    slug: "hayvonlar",
+    title: "Hayvonlar",
+    icon: "🐸",
+    short: "Baqa kabi sakrang, qush kabi qanot qoqing!",
+    description: "Ekrandagi hayvon nima qilsa, bolalar ham shuni takrorlaydi: sakraydi, qarsak chaladi, qo‘l silkitadi, qanot qoqadi.",
+    tip: "Hayvon nima qilsa, siz ham shuni qiling",
+    rules: ["Rasmga qarang va takrorlang.", "Sakrang, qarsak chaling, qo‘l silkiting.", "To‘g‘ri qilsangiz — yulduz!"],
+    bodyParts: ["butun-tana"],
+    difficulty: "oson",
+    kidsFriendly: true,
+    audience: "bogcha",
+    twoPlayers: false,
+    stars: [15, 35, 60],
+    color: "#4fc464",
+  },
+  {
+    slug: "baliqcha",
+    title: "Baliqcha",
+    icon: "🎣",
+    short: "Qarmoq tashlang, baliqchani tortib oling!",
+    description: "Ko‘lda rangli baliqchalar suzadi. Har bir bolaning o‘z qarmog‘i bor: qo‘lni ko‘tarib tushirsa — qarmoq tashlanadi, poplavok cho‘kkanda qo‘lni ko‘tarsa — baliqcha savatga tushadi.",
+    tip: "Qo‘lni ko‘taring, tushiring!",
+    rules: ["Qo‘lni ko‘tarib tushiring — qarmoq tashlanadi.", "Poplavok cho‘kkanda qo‘lni ko‘taring yoki «tort» deng.", "Hamma bolalar birga savatni to‘ldiradi. Yutqazish yo‘q!"],
+    bodyParts: ["qollar"],
+    difficulty: "oson",
+    kidsFriendly: true,
+    audience: "bogcha",
+    twoPlayers: false,
+    stars: [15, 35, 60],
+    color: "#3b8bff",
+  },
+  // demo / e2e game of the kids kit (games/bogcha/demo): playable at /play/bogcha-demo, not listed
+  {
+    slug: "bogcha-demo",
+    title: "Yulduz tutish",
+    icon: "⭐",
+    short: "Yulduzlarni qo‘l bilan tuting.",
+    description: "Tepadan yulduzlar tushadi. Bolalar qo‘llari bilan ularni tutishadi.",
+    tip: "Qo‘lni yulduzga tekkizing",
+    rules: ["Qo‘lni yulduzga tekkizing.", "Yutqazish yo‘q!"],
+    bodyParts: ["qollar"],
+    difficulty: "oson",
+    kidsFriendly: true,
+    audience: "bogcha",
+    hidden: true,
+    twoPlayers: false,
+    stars: [15, 35, 60],
+    color: "#ffd23d",
+  },
 ];
 
 /** Games released on the site right now; the rest come back in a later stage. */
-export const ACTIVE_SLUGS = ["meva-ninja", "baliq-ovi", "mashina"] as const;
+export const ACTIVE_SLUGS = ["meva-ninja", "baliq-ovi", "mashina", "pufakchalar", "qotib-qol", "hayvonlar", "baliqcha", "bogcha-demo"] as const;
 
 export const GAMES: GameInfo[] = ALL_GAMES.filter((g) => (ACTIVE_SLUGS as readonly string[]).includes(g.slug));
+
+/** The main catalogue (home page, /oyinlar). */
+export const MAIN_GAMES: GameInfo[] = GAMES.filter((g) => g.audience !== "bogcha" && !g.hidden);
+/** Kindergarten games (/bogcha). */
+export const KIDS_GAMES: GameInfo[] = GAMES.filter((g) => g.audience === "bogcha" && !g.hidden);
 
 export const getGame = (slug: string): GameInfo | undefined => GAMES.find((g) => g.slug === slug);
 

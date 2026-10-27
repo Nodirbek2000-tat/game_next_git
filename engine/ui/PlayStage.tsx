@@ -12,7 +12,7 @@ import type { GameModule } from "../types";
 import { PLAY_CSS } from "./styles";
 
 const SCENE_STATES = new Set(["preparing", "countdown", "play", "pause"]);
-const BACK_HREF = "/oyinlar";
+const backOf = (runtime: EngineRuntime): string => (runtime.info.audience === "bogcha" ? "/bogcha" : "/oyinlar");
 
 /** Dispose geometries, materials and textures below `root` (skips anything flagged `userData.keep`). */
 export function disposeTree(root: THREE.Object3D): void {
@@ -87,6 +87,37 @@ function SceneHost({ runtime, module }: { runtime: EngineRuntime; module: GameMo
       </EngineContext.Provider>
     </group>
   );
+}
+
+/** Crowd (Bog‘cha) games: no WebGL at all. The scene only registers a 2D painter; a plain rAF loop drives the engine. */
+function CrowdHost({ runtime, module }: { runtime: EngineRuntime; module: GameModule }): ReactElement {
+  useEffect(() => {
+    runtime.sceneReady();
+  }, [runtime]);
+  const Scene = module.Scene;
+  return (
+    <EngineContext.Provider value={runtime}>
+      <Scene engine={runtime} />
+    </EngineContext.Provider>
+  );
+}
+
+function CrowdLayer({ runtime }: { runtime: EngineRuntime }): ReactElement | null {
+  const state = useRunUI((s) => s.state);
+  useEffect(() => {
+    let raf = 0;
+    let last = performance.now();
+    const loop = (): void => {
+      const now = performance.now();
+      runtime.step(now, (now - last) / 1000);
+      last = now;
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [runtime]);
+  const mod = runtime.module;
+  return SCENE_STATES.has(state) && mod ? <CrowdHost key={runtime.sessionId} runtime={runtime} module={mod} /> : null;
 }
 
 function SceneLayer({ runtime }: { runtime: EngineRuntime }): ReactElement {
@@ -217,7 +248,7 @@ function CameraOverlay({ runtime }: { runtime: EngineRuntime }): ReactElement {
               ↻ Qayta urinish
             </button>
           )}
-          <Link className="hk-btn ghost" href={BACK_HREF}>
+          <Link className="hk-btn ghost" href={backOf(runtime)}>
             ← Orqaga
           </Link>
         </div>
@@ -318,7 +349,7 @@ function ScanOverlay({ runtime }: { runtime: EngineRuntime }): ReactElement {
           <button className="hk-btn ghost" data-dwell onClick={() => runtime.skipScan()} data-testid="scan-skip">
             Skansiz o‘ynash
           </button>
-          <Link className="hk-btn ghost" href={BACK_HREF}>
+          <Link className="hk-btn ghost" href={backOf(runtime)}>
             ← Orqaga
           </Link>
         </div>
@@ -332,6 +363,32 @@ function ScanOverlay({ runtime }: { runtime: EngineRuntime }): ReactElement {
 
 function ReadyOverlay({ runtime }: { runtime: EngineRuntime }): ReactElement {
   const info = runtime.info;
+  if (runtime.crowd) {
+    return (
+      <div className="hk-ov dim hk-kids" data-testid="ready-overlay">
+        <div className="hk-card hk-glass hk-big">
+          <div className="hk-icon" aria-hidden="true">
+            {info.icon}
+          </div>
+          <h1>{info.title}</h1>
+          <p className="hk-lead">{info.tip}</p>
+          <p className="hk-muted" style={{ marginTop: 6 }}>
+            Bolalar kameradan 2–3 metr uzoqroq tursin
+          </p>
+          <div className="hk-row" style={{ marginTop: 22 }}>
+            <button className="hk-btn" data-dwell data-testid="start-btn" onClick={() => runtime.startGame()}>
+              ▶ Boshlash
+            </button>
+          </div>
+          <div className="hk-row hk-sub">
+            <button className="hk-btn ghost" onClick={() => runtime.exit()}>
+              ← Orqaga
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="hk-ov dim" data-testid="ready-overlay">
       <div className="hk-card hk-glass hk-big">
@@ -399,6 +456,39 @@ function PauseOverlay({ runtime }: { runtime: EngineRuntime }): ReactElement {
 function ResultsOverlay({ runtime }: { runtime: EngineRuntime }): ReactElement | null {
   const r = useRunUI((s) => s.results);
   if (!r) return null;
+  if (r.crowd) {
+    return (
+      <div className="hk-ov dim hk-kids" data-testid="results-overlay">
+        <div className="hk-card hk-glass hk-big" style={{ width: "min(860px,100%)" }}>
+          <div className="hk-icon" aria-hidden="true">
+            🎉
+          </div>
+          <h1 data-testid="crowd-title">Barakalla!</h1>
+          <div className="hk-stars" data-testid="result-stars" aria-label={`${r.score} yulduz`}>
+            {"⭐".repeat(Math.min(r.score, 30))}
+          </div>
+          {r.kids && r.kids.length > 0 && (
+            <div className="hk-kidrow">
+              {r.kids.map((k) => (
+                <div key={k.slot} style={{ ["--kc" as string]: k.color }}>
+                  <b aria-hidden="true">{k.emoji}</b>
+                  <span>{"⭐".repeat(Math.min(k.stars, 8))}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="hk-row">
+            <button className="hk-btn" data-dwell data-testid="again-btn" onClick={() => runtime.startGame()}>
+              ↻ Yana o‘ynaymiz
+            </button>
+            <button className="hk-btn ghost" data-dwell data-testid="back-btn" onClick={() => runtime.exit()}>
+              ← Orqaga
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
   const winnerText = r.winner === null ? "" : r.winner === -1 ? "Durang!" : `${r.players?.[r.winner]?.label ?? ""} g‘olib! 🏆`;
   return (
     <div className="hk-ov dim" data-testid="results-overlay">
@@ -511,11 +601,11 @@ export function PlayStage({ runtime }: { runtime: EngineRuntime }): ReactElement
       <style>{PLAY_CSS}</style>
       <video ref={video} className="hk-cam" playsInline muted autoPlay data-pip="0" />
       <canvas ref={bg} className="hk-layer hk-bg" />
-      <SceneLayer runtime={runtime} />
+      {runtime.crowd ? <CrowdLayer runtime={runtime} /> : <SceneLayer runtime={runtime} />}
       <canvas ref={fx} className="hk-layer hk-fx" />
       {showHud && <Hud runtime={runtime} />}
       {showHud && (
-        <Link className="hk-back" href={BACK_HREF} aria-label="Orqaga">
+        <Link className="hk-back" href={backOf(runtime)} aria-label="Orqaga">
           ← Orqaga
         </Link>
       )}

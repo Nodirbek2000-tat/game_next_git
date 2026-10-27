@@ -3,6 +3,7 @@
 
 import type { ComponentType } from "react";
 import type { EngineConfig } from "./config";
+import type { KidSlot } from "./tracking/kids";
 
 export interface Pt {
   x: number;
@@ -175,6 +176,8 @@ export interface GameResult {
   /** optional per-player scores for 2 player games (winner is shown) */
   players?: { score: number; label?: string }[];
   stats?: Record<string, number | string>;
+  /** crowd (Bog‘cha) games: stars of every child for the "Barakalla!" end screen */
+  kids?: { slot: number; emoji: string; color: string; stars: number }[];
 }
 
 export interface HudValues {
@@ -235,6 +238,11 @@ export interface AudioApi {
   ambStop(): void;
   musicStart(bpm?: number, style?: "drive" | "calm"): number;
   musicStop(): void;
+  /**
+   * The Web Audio graph (null until the first user gesture unlocked audio). `sfx` is the master bus (respects the sound
+   * setting), `music` the music bus (quieter, below master). Used by the Bog‘cha melody player.
+   */
+  graph(): { ac: AudioContext; sfx: GainNode; music: GainNode; musicEnabled: () => boolean } | null;
 }
 
 export type DrawFn = (ctx: CanvasRenderingContext2D, engine: EngineApi, now: number) => void;
@@ -277,6 +285,10 @@ export interface EngineApi {
   /** URL query of the play page (e.g. ?duration=10 lets tests shorten a game) */
   readonly query: URLSearchParams;
   readonly kids: boolean;
+  /** crowd game (meta.crowd, 2..5 children, no scan / player lock): read `kidSlots` instead of `players` */
+  readonly crowd: boolean;
+  /** the 5 kid slots of a crowd game (stable per child; see engine/tracking/kids.ts). Always 5 entries, check `.active` / `.present`. */
+  readonly kidSlots: readonly KidSlot[];
   readonly leftHanded: boolean;
   /** 0.5 .. 1.5 */
   readonly sensitivity: number;
@@ -315,6 +327,14 @@ export interface GameMeta {
   dim?: number;
   /** background music bpm hint, informational */
   musicBpm?: number;
+  /**
+   * Bog‘cha (kindergarten) game: 2..5 children at once, no player lock and no scan step, never pauses when somebody is
+   * missing, runs WITHOUT a WebGL canvas (2D overlay only) and detects up to 5 poses with low visibility thresholds.
+   * Read `engine.kidSlots`; draw with `engine.onDraw` (see games/bogcha/common).
+   */
+  crowd?: boolean;
+  /** crowd games: how many children the game uses (1..5, default 5) */
+  maxKids?: number;
 }
 
 export interface SceneProps {

@@ -19,6 +19,7 @@ import { DetectionScheduler } from "../tracking/scheduler";
 import { meanLuma, computeFit, SMALL_H, SMALL_W, type SmallFrame } from "../tracking/people";
 import { ScanController } from "../tracking/scan";
 import { Tracker, PLAYER_COLORS } from "../tracking/tracker";
+import { KidTracker, MAX_KIDS, type KidSlot } from "../tracking/kids";
 import type {
   AudioApi,
   DetectionResult,
@@ -72,6 +73,9 @@ interface FakeWindow {
 
 type Pending = { res: DetectionResult; captureTs: number; startTs: number; doneTs: number };
 
+/** MediaPipe pose confidence of crowd games: small bodies far from the camera */
+const CROWD_CONF = 0.35;
+
 const DARK_HINT = "Yorug‘lik kam — chiroqni yoqing yoki kameraga yorug‘lik tomon yuzlaning";
 
 /**
@@ -89,6 +93,8 @@ export class EngineRuntime implements EngineApi {
   module: GameModule | null = null;
   env: Env;
   tracker: Tracker;
+  /** crowd (Bog‘cha) games: every detected person as a stable kid slot; updated only when `crowd` */
+  kidTracker = new KidTracker();
   fx = new Fx2D();
   audioEngine: AudioEngine;
   detector: Detector | null = null;
@@ -171,7 +177,7 @@ export class EngineRuntime implements EngineApi {
     const s = snapshotSettings();
     this.applySettings();
     this.config = makeConfig({}, s.sensitivity);
-    this._playerCount = init.players === 2 && init.info.twoPlayers ? 2 : 1;
+    this._playerCount = init.players === 2 && init.info.twoPlayers && init.info.audience !== "bogcha" ? 2 : 1;
     this.tracker = new Tracker(this.config, this._playerCount);
     this.tracker.leftHanded = this.leftHanded;
     this._players = this.tracker.players;
@@ -201,6 +207,13 @@ export class EngineRuntime implements EngineApi {
   }
   get players(): PlayerFrame[] {
     return this._players;
+  }
+  /** Crowd game (2..5 children, no scan / lock, no WebGL canvas). Known from the catalogue before the module is loaded. */
+  get crowd(): boolean {
+    return this.module?.meta.crowd ?? this.info.audience === "bogcha";
+  }
+  get kidSlots(): readonly KidSlot[] {
+    return this.kidTracker.slots;
   }
   get playerCount(): 1 | 2 {
     return this._playerCount;
@@ -247,7 +260,7 @@ export class EngineRuntime implements EngineApi {
     if (this.result || (this._state !== "play" && this._state !== "pause" && this._state !== "countdown")) return;
     this.result = result;
     this.overAt = performance.now();
-    this.say(result.players ? "O‘yin tugadi!" : "Vaqt tugadi!", "", 1300);
+    this.say(this.crowd ? "Barakalla!" : result.players ? "O‘yin tugadi!" : "Vaqt tugadi!", "", 1300);
   }
 
   screenToWorld(x: number, y: number, z: number, out: WorldPoint): void {
@@ -323,7 +336,8 @@ export class EngineRuntime implements EngineApi {
   private fxDpr = 1;
   private applyFxDpr(): void {
     const { w, h, dpr } = this.stage;
-    const eff = this.quality.level === "low" ? Math.min(dpr, 1) : dpr;
+    // crowd games run on the weakest PCs: the full screen 2D layers are always drawn at 1x
+    const eff = this.quality.level === "low" || this.crowd ? Math.min(dpr, 1) : dpr;
     if (eff === this.fxDpr) return;
     this.fxDpr = eff;
     for (const c of [this.fxCanvas, this.bgCanvas]) {
@@ -430,13 +444,17 @@ export class EngineRuntime implements EngineApi {
     const [mod, device] = await Promise.all([this.init.load(), detectDevice()]);
     this.module = mod.default;
     this.device = device;
-    if (!device.webgl) throw new Error("nowebgl");
+    if (!device.webgl && !this.crowd) throw new Error("nowebgl");
+    if (this.crowd) this.kidTracker.maxKids = clamp(Math.round(this.module.meta.maxKids ?? MAX_KIDS), 1, MAX_KIDS);
     this.calib = new CalibrationAnalyzer(this.config.calibration, this.module.meta.needsLegs);
     useRunUI.getState().patch({ scan: { ...ui.scan, needsLegs: this.module.meta.needsLegs, canPickPlayers: this.info.twoPlayers && this.module.meta.maxPlayers === 2 } });
     if (this.module.meta.maxPlayers === 1 && this._playerCount === 2) this.setPlayerCount(1);
     // quality
     const s = snapshotSettings();
-    const { level, adaptive } = resolveInitialLevel(s.quality, device);
+    const resolved = resolveInitialLevel(s.quality, device);
+    // crowd games draw 2D only: start on the cheapest level so a weak CPU lowers the detection rate first when it struggles
+    const level = this.crowd ? "low" : resolved.level;
+    const adaptive = this.crowd ? true : resolved.adaptive;
     this.qc = new QualityController({ initial: level, adaptive, devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2) });
     this.quality = this.qc.params;
     this.applyFxDpr();
@@ -457,6 +475,9 @@ export class EngineRuntime implements EngineApi {
       poseModel,
       hands: this.module.meta.needsHands,
       preferWorker: this.init.worker !== false,
+      // crowd: up to 5 children, small bodies -> lower detection confidence (also kept when the room gets dark, see updateLight)
+      numPoses: this.crowd ? MAX_KIDS : undefined,
+      minConf: this.crowd ? CROWD_CONF : undefined,
       onProgress: (pct, label) => prog(12 + pct * 0.88, label),
     });
     if (this.destroyed) {
@@ -471,6 +492,13 @@ export class EngineRuntime implements EngineApi {
   private beginScan(): void {
     this.tracker.resetPlayers();
     this._players = this.tracker.players;
+    if (this.crowd) {
+      // children cannot do a scan: nobody is locked, the nearest person only drives the menu cursor
+      this.kidTracker.reset();
+      this.tracker.lock.lockNearest(0);
+      this.setState("ready");
+      return;
+    }
     this.scan = new ScanController(this._playerCount, this.config.lock);
     this.scanStart = performance.now();
     this.setState("scan");
@@ -599,7 +627,8 @@ export class EngineRuntime implements EngineApi {
           buildLut(e, this.lut);
         }
       }
-      const conf = confidenceFor(e.darkness);
+      const base = confidenceFor(e.darkness);
+      const conf = this.crowd ? { det: Math.min(base.det, CROWD_CONF), pres: Math.min(base.pres, CROWD_CONF), track: Math.min(base.track, CROWD_CONF) } : base;
       const ck = `${conf.det}`;
       if (ck !== this.confKey) {
         this.confKey = ck;
@@ -663,6 +692,7 @@ export class EngineRuntime implements EngineApi {
     }
     // every frame (also the one with a new detection): hands/blades are drawn where the hand is NOW
     this.tracker.extrapolate(now, typeof fake === "function" ? 0 : undefined);
+    if (this.crowd) this.kidTracker.extrapolate(now, typeof fake === "function" ? 0 : undefined);
 
     // 2) state machine
     this.stepState(now, dt);
@@ -678,6 +708,7 @@ export class EngineRuntime implements EngineApi {
     // 4) 2D layer
     this.fx.update(dt);
     this.drawFx(now);
+    if (this.crowd) this.kidTracker.endFrame();
 
     // 5) debug / loading tips
     if (now - this.debugAt > 250) {
@@ -701,6 +732,7 @@ export class EngineRuntime implements EngineApi {
     if (scanning || lockedAbsent || this.detectFrame % 3 === 0) this.grabSmall();
     this.tracker.small = this.small;
     this.tracker.process(p.res, now, fake ? now : p.captureTs);
+    if (this.crowd) this.kidTracker.update(this.tracker.people, now, fake ? now : p.captureTs, this.stage.w);
     // stats
     if (this.lastDetStamp) {
       const d = now - this.lastDetStamp;
@@ -792,7 +824,7 @@ export class EngineRuntime implements EngineApi {
     if (s === "play") {
       this.time += dt;
       // a locked player who has been gone too long pauses the game
-      const gone = this._players.some((p) => !p.present && p.lockMode !== "none" && p.lostFor > this.config.lock.lostPauseSec);
+      const gone = !this.crowd && this._players.some((p) => !p.present && p.lockMode !== "none" && p.lostFor > this.config.lock.lostPauseSec);
       if (gone && !this.result) {
         this.pause("lost");
       }
@@ -815,7 +847,7 @@ export class EngineRuntime implements EngineApi {
     this.drawFns.clear();
     useRunUI.getState().patch({
       results: null,
-      hud: { on: true, title: `${this.info.icon} ${this.info.title}`, score: 0, combo: null, time: null, timeLabel: "Vaqt", lives: null, bar: 1, players: this._players.map(() => ({ score: 0, label: "", extra: "" })) },
+      hud: { on: !this.crowd, title: `${this.info.icon} ${this.info.title}`, score: 0, combo: null, time: null, timeLabel: "Vaqt", lives: null, bar: 1, players: this._players.map(() => ({ score: 0, label: "", extra: "" })) },
     });
     this.setState("preparing");
   }
@@ -868,7 +900,8 @@ export class EngineRuntime implements EngineApi {
     const isBest = r.score > prevBest;
     if (isBest) writeBest(this.slug, r.score);
     const st = this.info.stars;
-    const stars = r.score >= st[2] ? 3 : r.score >= st[1] ? 2 : r.score >= st[0] ? 1 : 0;
+    // children never get "0 stars"
+    const stars = r.score >= st[2] ? 3 : r.score >= st[1] ? 2 : r.score >= st[0] || this.crowd ? 1 : 0;
     let winner: number | null = null;
     if (r.players && r.players.length === 2) winner = r.players[0].score === r.players[1].score ? -1 : r.players[0].score > r.players[1].score ? 0 : 1;
     this.endGameAudio();
@@ -883,6 +916,8 @@ export class EngineRuntime implements EngineApi {
         isBest,
         lines: r.lines,
         winner,
+        crowd: this.crowd,
+        kids: r.kids ?? null,
         players: r.players ? r.players.map((p, i) => ({ score: Math.round(p.score), label: p.label ?? `${i + 1}-o‘yinchi` })) : null,
       },
       hud: { ...useRunUI.getState().hud, on: false },
@@ -964,9 +999,12 @@ export class EngineRuntime implements EngineApi {
     const fx = this.fx;
     if (fx.shakeA) c.setTransform(dpr, 0, 0, dpr, (Math.random() * 2 - 1) * fx.shakeA * dpr, (Math.random() * 2 - 1) * fx.shakeA * dpr);
     const s = this._state;
-    const showSkel = snapshotSettings().skeleton;
+    const crowd = this.crowd;
+    const showSkel = snapshotSettings().skeleton && !crowd;
     const world = this.module?.meta.world ?? false;
-    if (s === "scan") {
+    if (crowd) {
+      // the game draws the children itself (cartoon avatars): no skeletons, no "tomoshabin" marks
+    } else if (s === "scan") {
       for (const p of this.tracker.people) {
         const idx = this.scanCands.indexOf(p);
         drawSkeleton(c, p.lm, idx >= 0 ? "rgba(52,211,153,.95)" : "rgba(255,255,255,.45)", idx >= 0 ? 4 : 2);
@@ -977,7 +1015,7 @@ export class EngineRuntime implements EngineApi {
         if (s === "ready" || s === "pause" || s === "results") drawSkeleton(c, pf.lm, hexToRgba(pf.color, 0.55), 3);
         else if (showSkel && !world) drawSkeleton(c, pf.lm, hexToRgba(pf.color, 0.55), 3);
       }
-      if ((s === "play" || s === "countdown") && !world) {
+      if ((s === "play" || s === "countdown") && !world && !crowd) {
         for (const o of this.tracker.others) {
           drawSkeleton(c, o.lm, "rgba(255,90,106,.35)", 2, false);
           const hd = o.lm[0];
@@ -1041,7 +1079,7 @@ export class EngineRuntime implements EngineApi {
         light: `${Math.round(this.light.mean * 100)}%${this.light.state.active ? ` ↑γ${this.light.state.gamma.toFixed(2)}` : ""}${this.light.tooDark ? " QORONG‘I" : ""}`,
         camera: `${Math.round(this.camFps)} fps`,
         people: this.tracker.people.length,
-        locked: lock,
+        locked: this.crowd ? this.kidTracker.slots.map((k) => `${k.slot + 1}:${k.active ? (k.present ? "✔" : "…") : "—"}`).join("  ") : lock,
         gesture: this._players.map((p) => p.gestures.name).join(" | "),
         backend: this.fakeWin().__fake ? "window.__fake" : d ? `${d.where} · ${d.delegate.pose}${d.delegate.hand ? "/" + d.delegate.hand : ""}` : "—",
         poseModel: d?.poseModel ?? "—",

@@ -91,6 +91,12 @@ export class AudioEngine implements AudioApi {
     }
   }
 
+  /** The Web Audio graph for synthesisers living outside this class (Bog‘cha melodies). Null before the first user gesture. */
+  graph(): { ac: AudioContext; sfx: GainNode; music: GainNode; musicEnabled: () => boolean } | null {
+    if (!this.ac || !this.master || !this.musicBus) return null;
+    return { ac: this.ac, sfx: this.master, music: this.musicBus, musicEnabled: this.opts.music };
+  }
+
   /** Re-apply sound setting to the master gain. */
   refresh(): void {
     if (this.master) this.master.gain.value = this.opts.sound() ? 0.55 : 0;

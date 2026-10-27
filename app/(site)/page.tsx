@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { GameCard } from "@/components/site/game-card";
 import { HeroScene } from "@/components/site/hero-scene";
-import { GAMES } from "@/lib/games";
+import { MAIN_GAMES } from "@/lib/games";
 
 export const metadata: Metadata = {
   title: { absolute: "Harakat o‘yinlari — tanangiz bilan o‘ynang" },
@@ -29,12 +30,21 @@ export default function Home() {
         </div>
 
         <ul className="mt-4 grid gap-4 sm:grid-cols-3 sm:gap-5 lg:mt-6">
-          {GAMES.map((g, i) => (
+          {MAIN_GAMES.map((g, i) => (
             <li key={g.slug} className="rise" style={{ animationDelay: `${0.18 + i * 0.07}s` }}>
               <GameCard game={g} />
             </li>
           ))}
         </ul>
+
+        <div className="rise mt-6 flex justify-center" style={{ animationDelay: "0.4s" }}>
+          <Link
+            href="/bogcha"
+            className="glass inline-flex min-h-14 items-center gap-3 rounded-3xl px-7 py-3 text-lg font-extrabold transition-transform hover:-translate-y-0.5 active:scale-95"
+          >
+            <span aria-hidden="true" className="text-3xl">🐰🐸</span> Bog‘cha uchun o‘yinlar
+          </Link>
+        </div>
 
         <p className="rise mt-8 flex items-center justify-center gap-2 text-center text-sm font-semibold text-muted" style={{ animationDelay: "0.45s" }}>
           <svg viewBox="0 0 24 24" className="size-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { GameCard } from "@/components/site/game-card";
 import { Container, PageHeader } from "@/components/site/page-shell";
-import { GAMES } from "@/lib/games";
+import { MAIN_GAMES } from "@/lib/games";
 
 export const metadata: Metadata = {
   title: "O‘yinlar",
@@ -15,7 +15,7 @@ export default function GamesPage() {
       <PageHeader title="O‘yinlar" />
       <Container>
         <ul className="grid gap-4 sm:grid-cols-3 sm:gap-5">
-          {GAMES.map((g, i) => (
+          {MAIN_GAMES.map((g, i) => (
             <li key={g.slug} className="rise" style={{ animationDelay: `${i * 0.07}s` }}>
               <GameCard game={g} />
             </li>

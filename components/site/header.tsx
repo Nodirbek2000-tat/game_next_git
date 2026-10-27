@@ -9,6 +9,13 @@ export function Header() {
         <Logo />
         <div className="ml-auto flex items-center gap-2">
           <Link
+            href="/bogcha"
+            data-testid="nav-bogcha"
+            className="glass inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl px-4 text-base font-bold transition-transform hover:-translate-y-0.5 active:scale-95"
+          >
+            <span aria-hidden="true">🐰</span> Bog‘cha
+          </Link>
+          <Link
             href="/sozlamalar"
             aria-label="Sozlamalar"
             title="Sozlamalar"
