@@ -864,7 +864,7 @@ export class BaliqRig implements Host {
       this.sfx.update(t, this.weather.wind);
     }
     // refraction + reflection passes (before the engine renders the main view)
-    this.passes.render(this.three.gl, this.three.scene, this.cam, e.quality.level === "medium");
+    this.passes.render(this.three.gl, this.three.scene, this.cam, true);
   }
 
   /** First person: the camera is the player's eye; it turns with the view yaw and eases its pitch towards the float / fish. */

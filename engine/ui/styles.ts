@@ -2,17 +2,21 @@
 // the game screen is always the dark, full-screen "arcade" look.
 
 export const PLAY_CSS = `
-.hk-root{--hk-bg:#07060f;--hk-panel:rgba(16,14,30,.78);--hk-line:rgba(255,255,255,.13);--hk-fg:#f5f3ff;--hk-muted:rgba(245,243,255,.62);
+.hk-root{--hk-bg:#07060f;--hk-panel:rgba(16,14,30,.9);--hk-line:rgba(255,255,255,.13);--hk-fg:#f5f3ff;--hk-muted:rgba(245,243,255,.62);
   --hk-a1:#7c5cff;--hk-a2:#22d3ee;--hk-a3:#ff4fa3;--hk-gold:#ffc83d;--hk-ok:#34d399;--hk-bad:#ff5a6a;
   position:fixed;inset:0;z-index:50;background:var(--hk-bg);color:var(--hk-fg);overflow:hidden;user-select:none;-webkit-user-select:none;touch-action:none;
   font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
 .hk-root *{box-sizing:border-box}
 .hk-root button{font:inherit;color:inherit;cursor:pointer}
-.hk-cam{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);filter:brightness(.55);transition:filter .6s}
+.hk-cam{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+/* camera dimming: a black veil instead of a CSS filter on the video (a filter re-processes every camera frame on the GPU) */
+.hk-camdim{position:absolute;inset:0;background:#000;opacity:.45;transition:opacity .6s;pointer-events:none;z-index:0}
+.hk-camdim[data-pip="1"]{display:none}
 .hk-cam[data-pip="1"]{inset:auto;top:96px;right:14px;width:min(260px,24vw);height:auto;aspect-ratio:16/9;border-radius:12px;border:2px solid rgba(255,255,255,.35);z-index:4;opacity:.9}
 .hk-layer{position:absolute;inset:0;width:100%;height:100%;display:block;pointer-events:none}
 .hk-bg{z-index:1}.hk-three{position:absolute;inset:0;z-index:2;pointer-events:none}.hk-three canvas{pointer-events:none}.hk-fx{z-index:3}
-.hk-glass{background:var(--hk-panel);border:1px solid var(--hk-line);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+/* no backdrop-filter: blurring the live camera picture behind every panel costs a full GPU pass per camera frame (very slow on integrated GPUs) */
+.hk-glass{background:var(--hk-panel);border:1px solid var(--hk-line)}
 /* HUD */
 .hk-hud{position:absolute;top:14px;left:14px;right:14px;z-index:6;display:none;align-items:flex-start;gap:12px;pointer-events:none}
 .hk-hud.on{display:flex}
@@ -33,7 +37,7 @@ export const PLAY_CSS = `
 .hk-btns button{width:42px;height:42px;border-radius:50%;border:1px solid var(--hk-line);background:var(--hk-panel);font-size:16px;display:grid;place-items:center}
 .hk-back{position:absolute;left:14px;bottom:14px;z-index:7;height:42px;padding:0 16px;border-radius:999px;border:1px solid var(--hk-line);background:var(--hk-panel);font-size:14px;font-weight:700;display:flex;align-items:center;gap:8px;text-decoration:none;color:inherit}
 .hk-center{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);z-index:8;font-size:clamp(48px,11vw,150px);font-weight:900;letter-spacing:-.03em;
-  text-shadow:0 8px 40px rgba(0,0,0,.6);pointer-events:none;opacity:0;transition:opacity .2s,transform .25s;text-align:center;white-space:nowrap}
+  text-shadow:0 4px 12px rgba(0,0,0,.6);pointer-events:none;opacity:0;transition:opacity .2s,transform .25s;text-align:center;white-space:nowrap}
 .hk-center.show{opacity:1;transform:translate(-50%,-50%) scale(1.04)}
 .hk-center small{display:block;font-size:clamp(16px,2.4vw,26px);font-weight:600;letter-spacing:0;color:rgba(255,255,255,.85)}
 .hk-toast{position:absolute;left:50%;bottom:24px;transform:translate(-50%,8px);z-index:12;padding:10px 18px;border-radius:999px;font-size:14px;opacity:0;transition:all .25s;pointer-events:none}

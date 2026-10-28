@@ -3,8 +3,8 @@ import type { QualityLevel, QualityParams } from "../types";
 const ORDER: QualityLevel[] = ["low", "medium", "high"];
 
 const BASE: Record<QualityLevel, Omit<QualityParams, "level" | "resolutionScale">> = {
-  high: { pixelRatio: 2, shadows: true, postfx: true, viewDistance: 1, particles: 1 },
-  medium: { pixelRatio: 1.5, shadows: true, postfx: false, viewDistance: 0.75, particles: 0.7 },
+  high: { pixelRatio: 1.5, shadows: true, postfx: true, viewDistance: 1, particles: 1 },
+  medium: { pixelRatio: 1, shadows: false, postfx: false, viewDistance: 0.75, particles: 0.7 },
   low: { pixelRatio: 1, shadows: false, postfx: false, viewDistance: 0.5, particles: 0.4 },
 };
 
@@ -21,14 +21,15 @@ export interface QualityControllerOptions {
   /** the device pixel ratio of the screen; the level's pixel ratio is capped by it */
   devicePixelRatio?: number;
   targetFps?: number;
-  /** seconds below the low threshold before reacting (default 1.5) */
+  /** seconds below the low threshold before reacting (default 1) */
   downAfter?: number;
   /** seconds above the high threshold before stepping up (default 12) */
   upAfter?: number;
 }
 
 export function levelFromTier(tier: number, isMobile: boolean): QualityLevel {
-  if (tier >= 3 && !isMobile) return "high";
+  if (isMobile) return "low"; // phones and tablets always start cheap; the controller raises them when the fps allows
+  if (tier >= 3) return "high";
   if (tier >= 2) return "medium";
   return "low";
 }
@@ -65,7 +66,7 @@ export class QualityController {
     this.level = o.initial;
     this.maxLevel = ORDER.indexOf(o.initial);
     this.target = o.targetFps ?? 60;
-    this.down = o.downAfter ?? 1.5;
+    this.down = o.downAfter ?? 1;
     this.up = o.upAfter ?? 12;
     this.upWait = this.up;
     this.dpr = o.devicePixelRatio ?? 2;
@@ -119,12 +120,12 @@ export class QualityController {
 
   private degrade(now: number, bigStep: boolean): boolean {
     this.lowFor = 0;
-    this.cooldownUntil = now + 1.5;
+    this.cooldownUntil = now + 1;
     this.upWait = Math.min(this.up * 4, this.upWait * 2);
     const i = ORDER.indexOf(this.level);
     const min = MIN_SCALE[this.level];
     if (!bigStep && this.scale > min + 1e-6) {
-      this.scale = Math.max(min, +(this.scale - 0.15).toFixed(2));
+      this.scale = Math.max(min, +(this.scale - 0.2).toFixed(2));
     } else if (i > 0) {
       this.level = ORDER[i - 1];
       this.scale = 1;

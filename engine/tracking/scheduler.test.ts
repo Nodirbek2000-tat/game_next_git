@@ -9,28 +9,33 @@ const feed = (s: DetectionScheduler, fps: number, seconds: number, now: number, 
 
 describe("DetectionScheduler", () => {
   it("strong CPUs start at the highest rate, weak ones lower", () => {
-    expect(new DetectionScheduler({ cores: 12, level: "high", mainThread: false }).capFps).toBe(60);
-    expect(new DetectionScheduler({ cores: 4, level: "medium", mainThread: false }).capFps).toBe(30);
-    expect(new DetectionScheduler({ cores: 2, level: "low", mainThread: false }).capFps).toBeLessThanOrEqual(24);
+    expect(new DetectionScheduler({ cores: 12, level: "high", mainThread: false }).capFps).toBe(30); // 30 is the ceiling
+    expect(new DetectionScheduler({ cores: 4, level: "medium", mainThread: false }).capFps).toBe(20);
+    expect(new DetectionScheduler({ cores: 2, level: "low", mainThread: false }).capFps).toBeLessThanOrEqual(15);
     expect(initialRung(8, "low", true)).toBeGreaterThanOrEqual(2); // main thread inference is capped too
   });
 
   it("keeps the rate while rendering is smooth", () => {
     const s = new DetectionScheduler({ cores: 8, level: "high", mainThread: false });
     feed(s, 60, 60, 0);
-    expect(s.capFps).toBe(60);
+    expect(s.capFps).toBe(30);
+  });
+
+  it("phones start at 15-20 detections per second", () => {
+    expect(new DetectionScheduler({ cores: 8, level: "low", mainThread: false, mobile: true }).capFps).toBe(20);
+    expect(new DetectionScheduler({ cores: 4, level: "low", mainThread: false, mobile: true }).capFps).toBe(15);
   });
 
   it("does not touch the detection while graphics can still be reduced (tracking first)", () => {
     const s = new DetectionScheduler({ cores: 8, level: "high", mainThread: false });
     feed(s, 25, 30, 0, false);
-    expect(s.capFps).toBe(60);
+    expect(s.capFps).toBe(30);
   });
 
   it("lowers the rate when rendering stays slow with the cheapest graphics, within seconds", () => {
     const s = new DetectionScheduler({ cores: 8, level: "low", mainThread: false });
     feed(s, 30, 4, 0, true);
-    expect(s.capFps).toBeLessThan(60);
+    expect(s.capFps).toBeLessThan(30);
   });
 
   it("never goes below the last rung and recovers slowly, only up to its start", () => {
@@ -40,7 +45,7 @@ describe("DetectionScheduler", () => {
     now = feed(s, 60, 8, now);
     expect(s.capFps).toBe(RATE_LADDER[RATE_LADDER.length - 1]); // not yet
     feed(s, 60, 200, now);
-    expect(s.capFps).toBe(60);
+    expect(s.capFps).toBe(30);
   });
 
   it("main-thread inference lowers the rate even before the graphics are at their floor, and bounds the interval by the model time", () => {
@@ -50,7 +55,7 @@ describe("DetectionScheduler", () => {
     expect(s.capFps).toBeLessThan(start);
     expect(s.minIntervalMs(30)).toBeGreaterThanOrEqual(60);
     const w = new DetectionScheduler({ cores: 8, level: "high", mainThread: false });
-    expect(w.minIntervalMs(30)).toBeCloseTo(1000 / 60, 5); // a worker never blocks rendering
+    expect(w.minIntervalMs(30)).toBeCloseTo(1000 / 30, 5); // a worker never blocks rendering
   });
 
   it("smaller model input on the lower rungs", () => {

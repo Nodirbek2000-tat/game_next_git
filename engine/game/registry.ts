@@ -15,6 +15,9 @@ export const GAME_LOADERS: Record<string, () => Promise<{ default: GameModule }>
   "hayvonlar": () => import("@/games/hayvonlar"),
   "pufakchalar": () => import("@/games/pufakchalar"),
   "qotib-qol": () => import("@/games/qotib-qol"),
+  "havoda-rasm": () => import("@/games/havoda-rasm"),
+  "sanaymiz": () => import("@/games/sanaymiz"),
+  "devor-bolalar": () => import("@/games/devor-bolalar"),
 };
 
 export const isImplemented = (slug: string): boolean => slug in GAME_LOADERS;

@@ -10,7 +10,8 @@ function feed(q: QualityController, fps: number, seconds: number, now: number): 
 describe("levelFromTier", () => {
   it("maps device tiers to start levels", () => {
     expect(levelFromTier(3, false)).toBe("high");
-    expect(levelFromTier(3, true)).toBe("medium"); // phones/boards never start on high
+    expect(levelFromTier(3, true)).toBe("low"); // phones/tablets always start cheap
+    expect(levelFromTier(2, true)).toBe("low");
     expect(levelFromTier(2, false)).toBe("medium");
     expect(levelFromTier(1, false)).toBe("low");
     expect(levelFromTier(0, false)).toBe("low");
@@ -20,9 +21,14 @@ describe("levelFromTier", () => {
 describe("QualityController", () => {
   it("exposes the parameter set of the level", () => {
     const q = new QualityController({ initial: "high", adaptive: true, devicePixelRatio: 2 });
-    expect(q.params).toMatchObject({ level: "high", shadows: true, postfx: true, pixelRatio: 2 });
+    expect(q.params).toMatchObject({ level: "high", shadows: true, postfx: true, pixelRatio: 1.5 });
     const l = new QualityController({ initial: "low", adaptive: true, devicePixelRatio: 2 });
     expect(l.params).toMatchObject({ level: "low", shadows: false, postfx: false, pixelRatio: 1 });
+  });
+
+  it("medium and low render at pixel ratio 1 without shadows", () => {
+    const m = new QualityController({ initial: "medium", adaptive: true, devicePixelRatio: 2 });
+    expect(m.params).toMatchObject({ level: "medium", shadows: false, pixelRatio: 1 });
   });
 
   it("caps the pixel ratio by the screen's device pixel ratio", () => {
@@ -38,10 +44,10 @@ describe("QualityController", () => {
 
   it("low fps: first lowers the resolution scale, then drops the level", () => {
     const q = new QualityController({ initial: "high", adaptive: true });
-    let now = feed(q, 30, 4, 0);
+    let now = feed(q, 30, 2, 0);
     expect(q.level).toBe("high");
     expect(q.scale).toBeLessThan(1);
-    expect(q.params.pixelRatio).toBeLessThan(2);
+    expect(q.params.pixelRatio).toBeLessThan(1.5);
     for (let i = 0; i < 40 && q.level === "high"; i++) now = feed(q, 30, 1, now);
     expect(q.level).toBe("medium");
     expect(q.scale).toBe(1);
@@ -87,7 +93,7 @@ describe("QualityController", () => {
 describe("QualityController reaction speed and floor", () => {
   it("a very slow device (< 50 % of target) drops a whole level within ~1 s, not in baby steps", () => {
     const q = new QualityController({ initial: "high", adaptive: true });
-    feed(q, 20, 3, 0);
+    feed(q, 20, 2, 0);
     expect(q.level).toBe("medium");
     expect(q.scale).toBe(1);
   });

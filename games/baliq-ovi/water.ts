@@ -245,7 +245,8 @@ export class WaterPasses {
       this.enabled = false;
       return;
     }
-    const hi = level === "high";
+    // perf: small reflection / refraction targets on every level (the water is blurry anyway; no 1024x512 half-float targets on "high")
+    const hi = false;
     const mk = (w: number, h: number): THREE.WebGLRenderTarget =>
       new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, depthBuffer: true, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
     this.refl = mk(hi ? 1024 : 512, hi ? 512 : 256);

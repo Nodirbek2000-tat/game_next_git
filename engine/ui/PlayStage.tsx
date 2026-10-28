@@ -48,6 +48,11 @@ function EngineDriver({ runtime }: { runtime: EngineRuntime }): null {
       setDpr(pr);
     }
   }, -1000);
+  // A positive priority makes this the render step (R3F then no longer renders by itself). Nothing is drawn while no game scene is
+  // active (camera / scan / menus: the canvas is empty and hidden) and on the frames a capped device (phones) skips.
+  useFrame(({ gl: renderer, scene, camera }) => {
+    if (runtime.drawNow && SCENE_STATES.has(runtime.state)) renderer.render(scene, camera);
+  }, 1000);
   return null;
 }
 
@@ -124,13 +129,16 @@ function SceneLayer({ runtime }: { runtime: EngineRuntime }): ReactElement {
   const state = useRunUI((s) => s.state);
   const show = SCENE_STATES.has(state);
   const mod = runtime.module;
+  // the WebGL context is created once the device is known (quality level decides antialiasing / pixel ratio), not behind the camera dialog
+  const deviceKnown = state !== "camera" && state !== "loading" && state !== "error";
+  if (!deviceKnown) return <div className="hk-three" style={{ display: "none" }} />;
   return (
-    <div className="hk-three">
+    <div className="hk-three" style={show ? undefined : { visibility: "hidden" }}>
       <Canvas
         frameloop="always"
         dpr={runtime.quality.pixelRatio}
         camera={{ fov: 50, position: [0, 0, 10], near: 0.1, far: 400 }}
-        gl={{ alpha: true, antialias: runtime.quality.level !== "low", powerPreference: "high-performance" }}
+        gl={{ alpha: true, antialias: runtime.quality.level === "high", powerPreference: "high-performance" }}
         shadows={runtime.quality.shadows}
         onCreated={({ gl }) => {
           gl.setClearColor(0x000000, 0);
@@ -543,7 +551,7 @@ function DebugPanel(): ReactElement | null {
   return (
     <div className="hk-debug" data-testid="debug-panel">
       <div>
-        <b>holat</b> {state} · <b>fps</b> {d.renderFps} · <b>kamera fps</b> {d.detectFps}
+        <b>holat</b> {state} · <b>fps</b> {d.renderFps} · <b>aniqlash fps</b> {d.detectFps}
       </div>
       <div>
         <b>kechikish</b> ≈{d.latencyMs} ms <small>(kutish {d.latWait} · model {d.inferMs} · qo‘llash {d.latApply} · eng yomon {d.latPeak})</small> · <b>odamlar</b> {d.people}
@@ -600,6 +608,7 @@ export function PlayStage({ runtime }: { runtime: EngineRuntime }): ReactElement
     <div ref={root} className="hk-root" data-state={state} data-testid="play-root">
       <style>{PLAY_CSS}</style>
       <video ref={video} className="hk-cam" playsInline muted autoPlay data-pip="0" />
+      <div className="hk-camdim" data-pip="0" />
       <canvas ref={bg} className="hk-layer hk-bg" />
       {runtime.crowd ? <CrowdLayer runtime={runtime} /> : <SceneLayer runtime={runtime} />}
       <canvas ref={fx} className="hk-layer hk-fx" />

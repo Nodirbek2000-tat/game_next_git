@@ -1,9 +1,12 @@
 import type { QualityLevel } from "../types";
 
-/** Detection rates the scheduler steps through (per second). */
-export const RATE_LADDER = [60, 45, 30, 24, 20, 15] as const;
-/** Longest side (px) of the image sent to the model for each rung. */
-const SIDE_LADDER = [640, 640, 576, 512, 448, 416] as const;
+/**
+ * Detection rates the scheduler steps through (per second). 30 is the ceiling: the camera delivers 30 fps, the extrapolation of the
+ * landmarks hides the rest, and every extra analysed frame costs CPU / GPU time the game needs for rendering.
+ */
+export const RATE_LADDER = [30, 24, 20, 15, 12, 10] as const;
+/** Longest side (px) of the image sent to the model for each rung (the pose models look at 256 px internally). */
+const SIDE_LADDER = [480, 448, 416, 384, 352, 320] as const;
 
 export interface SchedulerOptions {
   /** navigator.hardwareConcurrency */
@@ -12,20 +15,23 @@ export interface SchedulerOptions {
   level: QualityLevel;
   /** the model runs on the main thread (blocks rendering while it works) */
   mainThread: boolean;
+  /** phone / tablet: starts on a lower rung */
+  mobile?: boolean;
   /** render fps the game aims for */
   targetFps?: number;
-  /** seconds of low fps before the detection rate is lowered (default 2) */
+  /** seconds of low fps before the detection rate is lowered (default 1.2) */
   downAfter?: number;
   /** seconds of good fps before it is raised again (default 10) */
   upAfter?: number;
 }
 
 /** Where a device should start on the ladder. Pure. */
-export function initialRung(cores: number, level: QualityLevel, mainThread: boolean): number {
+export function initialRung(cores: number, level: QualityLevel, mainThread: boolean, mobile = false): number {
   let i = 0;
-  if (cores <= 2) i = 4;
+  if (cores <= 2) i = 3;
   else if (cores <= 4) i = 2;
   else if (cores <= 6 && level === "low") i = 1;
+  if (mobile) i = Math.max(i, cores <= 4 ? 3 : 2);
   if (mainThread) i = Math.max(i, 2);
   return i;
 }
@@ -50,9 +56,9 @@ export class DetectionScheduler {
   private readonly up: number;
 
   constructor(private o: SchedulerOptions) {
-    this.idx = this.ceil = initialRung(o.cores, o.level, o.mainThread);
+    this.idx = this.ceil = initialRung(o.cores, o.level, o.mainThread, o.mobile);
     this.target = o.targetFps ?? 60;
-    this.down = o.downAfter ?? 2;
+    this.down = o.downAfter ?? 1.2;
     this.up = o.upAfter ?? 10;
   }
 

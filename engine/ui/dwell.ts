@@ -16,6 +16,9 @@ export class DwellController {
   el: HTMLElement | null = null;
   private t0 = 0;
   private cool = 0;
+  private rects: { el: HTMLElement; l: number; t: number; r: number; b: number }[] = [];
+  private cacheAt = -1e9;
+  private cacheRoot: HTMLElement | null = null;
   private sx: OneEuro;
   private sy: OneEuro;
 
@@ -61,13 +64,21 @@ export class DwellController {
 
   /** Hover / progress / click for the targets below `root`. */
   tick(now: number, root: HTMLElement | null): void {
-    const els = root ? Array.from(root.querySelectorAll<HTMLElement>("[data-dwell]")) : [];
     let hit: HTMLElement | null = null;
-    if (this.on) {
-      for (const el of els) {
-        const r = el.getBoundingClientRect();
-        if (r.width && this.x >= r.left && this.x <= r.right && this.y >= r.top && this.y <= r.bottom) {
-          hit = el;
+    // no hand in view: no DOM work at all. Otherwise the target rectangles are measured every 150 ms, not every frame (layout is expensive).
+    if (this.on && root) {
+      if (root !== this.cacheRoot || now - this.cacheAt > 150) {
+        this.cacheRoot = root;
+        this.cacheAt = now;
+        this.rects.length = 0;
+        for (const el of root.querySelectorAll<HTMLElement>("[data-dwell]")) {
+          const r = el.getBoundingClientRect();
+          if (r.width) this.rects.push({ el, l: r.left, t: r.top, r: r.right, b: r.bottom });
+        }
+      }
+      for (const q of this.rects) {
+        if (q.el.isConnected && this.x >= q.l && this.x <= q.r && this.y >= q.t && this.y <= q.b) {
+          hit = q.el;
           break;
         }
       }
@@ -99,6 +110,7 @@ export class DwellController {
 
   /** Forget the hovered element (overlay changed). */
   release(): void {
+    this.cacheAt = -1e9; // the overlay changed: measure again
     if (this.el) {
       this.el.classList.remove("hover");
       this.el.style.setProperty("--p", "0");

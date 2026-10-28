@@ -18,7 +18,16 @@ export interface DeviceProfile {
   webgl: boolean;
 }
 
+/** integrated GPUs share memory bandwidth with the camera, the models and the compositor: "high" is never a good start there */
+const INTEGRATED_GPU = /intel|uhd|iris|radeon(tm) graphics|vega d+ graphics|adreno|mali|powervr|apple gpu/i;
 const SOFTWARE_GPU = /swiftshader|llvmpipe|software|basic render|softpipe/i;
+
+/** Phone / tablet (also iPadOS that pretends to be a Mac). */
+export function isMobileDevice(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent;
+  return /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(ua) || (/Macintosh/.test(ua) && (navigator.maxTouchPoints ?? 0) > 1);
+}
 
 /** Can a WebGL context be created here? (the 3D layer cannot start without one) */
 export function webglSupported(): boolean {
@@ -42,7 +51,7 @@ function hardware(): { cores: number; memory: number } {
 export async function detectDevice(timeoutMs = 3500): Promise<DeviceProfile> {
   const hw = hardware();
   const webgl = webglSupported();
-  const fallback: DeviceProfile = { tier: webgl ? 2 : 0, isMobile: /Android|iPhone|iPad/.test(navigator.userAgent), gpu: "noma’lum", detected: false, ...hw, software: !webgl, webgl };
+  const fallback: DeviceProfile = { tier: webgl ? 2 : 0, isMobile: isMobileDevice(), gpu: "noma’lum", detected: false, ...hw, software: !webgl, webgl };
   if (!webgl) return fallback;
   try {
     const { getGPUTier } = await import("detect-gpu");
@@ -53,7 +62,7 @@ export async function detectDevice(timeoutMs = 3500): Promise<DeviceProfile> {
     if (!res) return fallback;
     const gpu = res.gpu ?? "noma’lum";
     const software = SOFTWARE_GPU.test(gpu);
-    return { tier: software ? 0 : res.tier, isMobile: !!res.isMobile, gpu, detected: res.type !== "FALLBACK", ...hw, software, webgl };
+    return { tier: software ? 0 : res.tier, isMobile: !!res.isMobile || isMobileDevice(), gpu, detected: res.type !== "FALLBACK", ...hw, software, webgl };
   } catch {
     return fallback;
   }
@@ -70,7 +79,7 @@ export function resolveInitialLevel(setting: QualitySetting, device: DeviceProfi
   const tiny = device.cores > 0 && device.cores <= 2;
   const lowMem = device.memory > 0 && device.memory <= 2;
   if (device.software || tiny || lowMem) level = "low";
-  else if (weakCpu && level === "high") level = "medium";
+  else if ((weakCpu || INTEGRATED_GPU.test(device.gpu)) && level === "high") level = "medium";
   return { level, adaptive: true };
 }
 

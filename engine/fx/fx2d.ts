@@ -37,11 +37,16 @@ export class Fx2D implements FxApi {
   shakeA = 0;
   flashV = 0;
   flashCol = "255,255,255";
+  /** the stain layer got its first stain (true) / is empty again (false): the owner shows / hides the canvas (one compositor layer less) */
+  onStainLayer?: (on: boolean) => void;
   /** particle count multiplier (quality level) */
   density = 1;
   private stainCtx: CanvasRenderingContext2D | null = null;
   private stainW = 0;
   private stainH = 0;
+  /** seconds the stain layer still has something on it (a full-screen fade pass runs only then, and at 10 Hz) */
+  private stainLive = 0;
+  private stainAcc = 0;
 
   constructor() {
     for (let i = 0; i < MAXP; i++) {
@@ -63,6 +68,8 @@ export class Fx2D implements FxApi {
     this.n = 0;
     this.shakeT = this.shakeA = this.flashV = 0;
     this.stainCtx?.clearRect(0, 0, this.stainW, this.stainH);
+    this.stainLive = this.stainAcc = 0;
+    this.onStainLayer?.(false);
   }
 
   private alloc(): Particle {
@@ -166,6 +173,8 @@ export class Fx2D implements FxApi {
   stain(x: number, y: number, r: number, col: string): void {
     const c = this.stainCtx;
     if (!c) return;
+    if (this.stainLive <= 0) this.onStainLayer?.(true);
+    this.stainLive = 14;
     c.save();
     c.globalAlpha = 0.55;
     c.fillStyle = col;
@@ -208,14 +217,23 @@ export class Fx2D implements FxApi {
     this.shakeT = Math.max(0, this.shakeT - dt);
     if (!this.shakeT) this.shakeA = 0;
     this.flashV *= Math.pow(0.88, s);
-    // stains slowly fade
+    // stains slowly fade: one full-screen pass every 100 ms, and none at all while the layer is empty
     const c = this.stainCtx;
-    if (c) {
-      c.save();
-      c.globalCompositeOperation = "destination-out";
-      c.globalAlpha = Math.min(1, dt * 0.45);
-      c.fillRect(0, 0, this.stainW, this.stainH);
-      c.restore();
+    if (c && this.stainLive > 0) {
+      this.stainLive -= dt;
+      this.stainAcc += dt;
+      if (this.stainLive <= 0) {
+        c.clearRect(0, 0, this.stainW, this.stainH);
+        this.stainAcc = 0;
+        this.onStainLayer?.(false);
+      } else if (this.stainAcc >= 0.1) {
+        c.save();
+        c.globalCompositeOperation = "destination-out";
+        c.globalAlpha = Math.min(1, this.stainAcc * 0.45);
+        c.fillRect(0, 0, this.stainW, this.stainH);
+        c.restore();
+        this.stainAcc = 0;
+      }
     }
   }
 

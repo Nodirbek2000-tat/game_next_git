@@ -14,6 +14,9 @@ const LABEL: Record<string, string> = {
   "qotib-qol": "Musiqa — qotib qol!",
   hayvonlar: "Hayvonlar kabi qil",
   baliqcha: "Baliqcha tut",
+  "devor-bolalar": "Devordan o‘t",
+  "havoda-rasm": "Havoda rasm chiz",
+  sanaymiz: "Sanab o‘yna",
 };
 
 export default function BogchaPage() {

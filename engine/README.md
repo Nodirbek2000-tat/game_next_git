@@ -137,8 +137,8 @@ Other query flags: `?players=2`, `?worker=0` (force main-thread tracking).
 
 ## Speed, latency and robustness (tracking comes first, graphics second)
 
-* **Camera**: 640x360 @ 30 fps requested (`camera/camera.ts`); when the light is good and the model is fast the runtime asks for 60 fps
-  (half the capture delay) and goes back to 30 in a dim room (longer exposure).
+* **Camera**: 640x360 @ 30 fps requested (480x270 on phones, `camera/camera.ts`). The 60 fps boost only happens when the detection ladder allows
+  more than 45/s, which it no longer does (see Performance below).
 * **Newest frame only**: detection is driven by `requestVideoFrameCallback`; frames that arrive while the model is busy are dropped,
   never queued. The result is applied the moment it arrives (not at the next render frame).
 * **Capture-time prediction** (`tracking/prediction.ts`, `blades.ts`, `tracker.ts`): filters, velocities and acceleration run on the camera
@@ -168,3 +168,22 @@ Other query flags: `?players=2`, `?worker=0` (force main-thread tracking).
 `public/engine/tracking-worker.js` (classic worker: MediaPipe's loader needs `importScripts`).
 Helper: `node scripts/sync-engine-assets.mjs` re-copies `vision_bundle.js` and the detect-gpu benchmarks from `node_modules`
 after a dependency update.
+
+## Performance (read before touching the frame loop)
+
+Smoothness beats looks. The rules the engine follows (measured with `e2e/perf`, results in `e2e/perf/RESULTS.md`):
+
+* **Delegate benchmark** (`public/engine/tracking-worker.js`): at the first visit the worker times the pose model on the GPU delegate and, unless it is
+  clearly fast (< 9 ms), on the CPU delegate too, and keeps the faster one (CPU wins ties: it leaves the GPU to the game). The choice is stored in
+  `localStorage["harakat.delegate.v1"]` (per GPU / cores / memory) so later visits skip the benchmark. `?delegate=cpu|gpu` forces one.
+  While playing, a GPU delegate that stays > 70 ms per frame (or stalls > 1.5 s) is switched to the CPU at runtime (`watchDelegate`).
+* **numPoses**: crowd games follow every child, a running game only its players (1 or 2); scan / menus follow one more so a bystander does not
+  get picked. Changed at runtime with `Detector.setPoses`.
+* **Detection rate** is capped at 30/s (ladder 30-24-20-15-12-10; phones start at 20/15), the model gets <= 480 px (ladder down to 320), the low-light
+  brightening works on <= 320 px.
+* **Quality**: phones, integrated GPUs and weak CPUs start low / medium; pixel ratio 1 on low and medium (1.5 on high), no shadows below high, antialias
+  only on high; the controller reacts after ~1 s. Phones render at 30 fps (the 3D canvas and the 2D layer skip every other frame, `runtime.drawNow`).
+* **No CSS blur / filter over the camera**: `.hk-glass` has no backdrop-filter, the camera is dimmed with a black veil (`.hk-camdim`), not a CSS filter.
+* **Idle canvas**: the WebGL canvas is created once the device is known, hidden and not rendered while no game scene is active (scan, menus, results);
+  rendering is the engine's own positive-priority `useFrame` in `PlayStage`.
+* **React**: HUD values from games are merged and pushed to the store every 100 ms, the scan card every 100 ms; the 2D stain layer fades only while it has stains.

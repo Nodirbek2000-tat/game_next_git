@@ -12,7 +12,7 @@ import { clamp } from "../math";
 import { QualityController } from "../quality/controller";
 import { detectDevice, resolveInitialLevel, resolvePoseModel, type DeviceProfile } from "../quality/gpu";
 import { readBest, snapshotSettings, useSettings, writeBest } from "../settings/store";
-import { Detector, type DetectOptions } from "../tracking/detector";
+import { Detector, type DetectOptions, type Delegate } from "../tracking/detector";
 import { LowLightController, applyLut, buildLut, confidenceFor, lightStats } from "../tracking/lowLight";
 import { LatencyTracker, sanitizeCaptureTs } from "../tracking/prediction";
 import { DetectionScheduler } from "../tracking/scheduler";
@@ -48,6 +48,7 @@ const TIPS = [
   "Klaviatura: P — pauza, M — ovoz, Esc — chiqish.",
 ];
 
+const DELEGATE_KEY = "harakat.delegate.v1";
 const AR_FOV = 50;
 const AR_Z = 10;
 const TAN = Math.tan((AR_FOV * Math.PI) / 360);
@@ -135,6 +136,7 @@ export class EngineRuntime implements EngineApi {
   private smallCanvas: HTMLCanvasElement | null = null;
   private smallCtx: CanvasRenderingContext2D | null = null;
   private lastDetectNow = 0;
+  private lastGrab = -1e9;
   private fpsEma = 60;
   private detEma = 0;
   private lastDetStamp = 0;
@@ -166,6 +168,16 @@ export class EngineRuntime implements EngineApi {
   private cleanup: (() => void)[] = [];
   private qualitySetting = "auto";
   private hudState = { score: -1 };
+  /** render frame rate cap: 30 on phones / tablets (half the GPU work), 60 elsewhere */
+  private renderCap = 60;
+  private lastRenderAt = 0;
+  private accDelta = 0;
+  /** false on the frames a capped device skips (the 3D canvas and the 2D layer are left as they are) */
+  drawNow = true;
+  private lastScanUi = 0;
+  private hudPending: HudValues | null = null;
+  private hudAt = 0;
+  private poseCount = 0;
 
   constructor(private init: RuntimeInit) {
     this.slug = init.slug;
@@ -291,6 +303,10 @@ export class EngineRuntime implements EngineApi {
     this.video = refs.video;
     this.fxCanvas = refs.fx;
     this.bgCanvas = refs.bg;
+    refs.bg.style.display = "none"; // only games that leave stains need this layer
+    this.fx.onStainLayer = (on) => {
+      if (this.bgCanvas) this.bgCanvas.style.display = on ? "" : "none";
+    };
     this.overlayRoot = refs.overlay;
     this.smallCanvas = document.createElement("canvas");
     this.smallCanvas.width = SMALL_W;
@@ -336,8 +352,8 @@ export class EngineRuntime implements EngineApi {
   private fxDpr = 1;
   private applyFxDpr(): void {
     const { w, h, dpr } = this.stage;
-    // crowd games run on the weakest PCs: the full screen 2D layers are always drawn at 1x
-    const eff = this.quality.level === "low" || this.crowd ? Math.min(dpr, 1) : dpr;
+    // the full screen 2D layers are drawn at 1x everywhere except on a strong desktop at "high" (1.5x at most): speed matters more than sharpness
+    const eff = this.quality.level === "high" && !this.crowd && !this.device.isMobile ? Math.min(dpr, 1.5) : 1;
     if (eff === this.fxDpr) return;
     this.fxDpr = eff;
     for (const c of [this.fxCanvas, this.bgCanvas]) {
@@ -362,6 +378,7 @@ export class EngineRuntime implements EngineApi {
     this.dwell.release();
     useRunUI.getState().patch({ state: s });
     this.applyVideoLook();
+    this.syncPoses();
   }
 
   private applyVideoLook(): void {
@@ -370,8 +387,14 @@ export class EngineRuntime implements EngineApi {
     const world = this.module?.meta.world ?? false;
     const playing = this._state === "play" || this._state === "countdown" || this._state === "preparing" || this._state === "pause";
     const b = this._state === "scan" ? 0.7 : playing ? (this.module?.meta.dim ?? 0.62) : 0.5;
-    v.style.filter = `brightness(${b}) saturate(1.05)`;
-    v.dataset.pip = world && playing ? "1" : "0";
+    const pip = world && playing ? "1" : "0";
+    v.dataset.pip = pip;
+    // the camera is dimmed with a black veil (next sibling of the video), not with a CSS filter on the video
+    const veil = v.nextElementSibling as HTMLElement | null;
+    if (veil?.classList.contains("hk-camdim")) {
+      veil.style.opacity = String(Math.round((1 - b) * 100) / 100);
+      veil.dataset.pip = pip;
+    }
   }
 
   /** Camera permission -> game module + models -> scan. */
@@ -455,7 +478,9 @@ export class EngineRuntime implements EngineApi {
     // crowd games draw 2D only: start on the cheapest level so a weak CPU lowers the detection rate first when it struggles
     const level = this.crowd ? "low" : resolved.level;
     const adaptive = this.crowd ? true : resolved.adaptive;
-    this.qc = new QualityController({ initial: level, adaptive, devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2) });
+    this.renderCap = device.isMobile ? 30 : 60;
+    this.fpsEma = this.renderCap;
+    this.qc = new QualityController({ initial: level, adaptive, devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2), targetFps: this.renderCap });
     this.quality = this.qc.params;
     this.applyFxDpr();
     this.qc.onChange = (p) => {
@@ -463,7 +488,7 @@ export class EngineRuntime implements EngineApi {
       this.fx.density = p.particles;
       this.applyFxDpr();
     };
-    this.sched = new DetectionScheduler({ cores: device.cores || 4, level, mainThread: false });
+    this.sched = new DetectionScheduler({ cores: device.cores || 4, level, mainThread: false, mobile: device.isMobile, targetFps: this.renderCap });
     this.fx.density = this.quality.particles;
     prog(12, "O‘yin moduli yuklandi");
     if (useFake) {
@@ -476,8 +501,9 @@ export class EngineRuntime implements EngineApi {
       hands: this.module.meta.needsHands,
       preferWorker: this.init.worker !== false,
       // crowd: up to 5 children, small bodies -> lower detection confidence (also kept when the room gets dark, see updateLight)
-      numPoses: this.crowd ? MAX_KIDS : undefined,
+      numPoses: this.wantedPoses(),
       minConf: this.crowd ? CROWD_CONF : undefined,
+      delegate: this.delegatePref(),
       onProgress: (pct, label) => prog(12 + pct * 0.88, label),
     });
     if (this.destroyed) {
@@ -485,8 +511,57 @@ export class EngineRuntime implements EngineApi {
       this.detector = null;
       return;
     }
-    if (this.detector.info.where === "main") this.sched = new DetectionScheduler({ cores: device.cores || 4, level, mainThread: true });
+    this.poseCount = this.wantedPoses();
+    this.rememberDelegate();
+    if (this.detector.info.where === "main") this.sched = new DetectionScheduler({ cores: device.cores || 4, level, mainThread: true, mobile: device.isMobile, targetFps: this.renderCap });
     this.startDetectLoop();
+  }
+
+  /**
+   * How many bodies the pose model follows. Every extra body costs inference time: crowd games follow every child, a game in progress only
+   * its players; the menus / scan look at one more person so a bystander does not get picked (or hide the player).
+   */
+  private wantedPoses(): number {
+    if (this.crowd) return clamp(Math.round(this.module?.meta.maxKids ?? MAX_KIDS), 1, MAX_KIDS);
+    return this._state === "play" ? this._playerCount : this._playerCount + 1;
+  }
+
+  private syncPoses(): void {
+    const n = this.wantedPoses();
+    if (n === this.poseCount || !this.detector) return;
+    this.poseCount = n;
+    this.detector.setPoses(n);
+  }
+
+  /** "GPU" / "CPU" to skip the startup benchmark: ?delegate=cpu|gpu, or the choice measured on this device earlier. */
+  private delegatePref(): Delegate | "auto" {
+    const q = this.query.get("delegate");
+    if (q === "cpu") return "CPU";
+    if (q === "gpu") return "GPU";
+    try {
+      const v = JSON.parse(localStorage.getItem(DELEGATE_KEY) ?? "null") as { d?: string; k?: string } | null;
+      if (v && (v.d === "CPU" || v.d === "GPU") && v.k === this.deviceKey()) return v.d;
+    } catch {
+      /* no storage */
+    }
+    // phones: the GPU delegate is the normal fast path and the benchmark (shader compile on a slow CPU) would cost 10+ s on the first visit;
+    // the run-time watchdog (watchDelegate) moves to the CPU when the GPU turns out slow
+    return this.device.isMobile ? "GPU" : "auto";
+  }
+
+  private deviceKey(): string {
+    return `${this.device.gpu}|${this.device.cores}|${this.device.memory}`;
+  }
+
+  /** Keep the delegate the benchmark chose, so the next visit starts without it. */
+  private rememberDelegate(): void {
+    const info = this.detector?.info;
+    if (!info?.bench || info.where !== "worker") return;
+    try {
+      localStorage.setItem(DELEGATE_KEY, JSON.stringify({ d: info.delegate.pose, k: this.deviceKey() }));
+    } catch {
+      /* no storage */
+    }
   }
 
   private beginScan(): void {
@@ -524,6 +599,7 @@ export class EngineRuntime implements EngineApi {
     this._players = this.tracker.players;
     this.tracker.leftHanded = this.leftHanded;
     useRunUI.getState().patch({ scan: { ...useRunUI.getState().scan, players: n } });
+    this.syncPoses();
     if (this._state === "scan" || this._state === "ready") this.beginScan();
   }
 
@@ -579,10 +655,34 @@ export class EngineRuntime implements EngineApi {
       schedule();
     };
     const vfc = v as HTMLVideoElement & { requestVideoFrameCallback?: (cb: (now: number, meta: { captureTime?: number }) => void) => number };
+    // requestVideoFrameCallback only fires for frames the browser actually paints: a video that is covered, culled or not composited
+    // (it happens) would stop the whole tracking. So a poll timer runs as a safety net; only one of each is ever pending.
+    let vfcPending = false;
+    let pollPending = false;
+    let lastVfc = -1e9;
+    const onVfc = (now: number, meta: { captureTime?: number }): void => {
+      vfcPending = false;
+      lastVfc = performance.now();
+      tick(now, meta);
+    };
+    const onPoll = (): void => {
+      pollPending = false;
+      // the frame callback is alive: it picks the frames (with their capture time); the poll only steps in when it is silent
+      if (performance.now() - lastVfc > 120) tick();
+      else schedule();
+    };
     const schedule = (): void => {
       if (this.destroyed) return;
-      if (vfc.requestVideoFrameCallback) vfc.requestVideoFrameCallback(tick);
-      else requestAnimationFrame(() => tick());
+      if (vfc.requestVideoFrameCallback) {
+        if (!vfcPending) {
+          vfcPending = true;
+          vfc.requestVideoFrameCallback(onVfc);
+        }
+        if (!pollPending) {
+          pollPending = true;
+          setTimeout(onPoll, 40);
+        }
+      } else requestAnimationFrame(() => tick());
     };
     schedule();
   }
@@ -648,6 +748,30 @@ export class EngineRuntime implements EngineApi {
     this.toast(DARK_HINT, 4500);
   }
 
+  private slowFor = 0;
+  /**
+   * The GPU delegate is shared with the game's rendering: when something else uses the GPU (or the GPU is simply weak) one frame can
+   * take 100+ ms. If the model stays slow while running on the GPU, continue on the CPU (the choice is remembered for the next visit).
+   */
+  private watchDelegate(now: number, gapSec: number): void {
+    const d = this.detector;
+    if (!d || d.info.where !== "worker" || d.info.delegate.pose !== "GPU") return;
+    const st = this._state;
+    if (st !== "scan" && st !== "ready" && st !== "play" && st !== "countdown") return;
+    const stalled = this.busy && now - this.lastStart > 1500;
+    if (stalled || (this.lat.samples > 12 && this.lat.infer > 70)) this.slowFor += gapSec;
+    else this.slowFor = Math.max(0, this.slowFor - gapSec);
+    if (this.slowFor > 2.5) {
+      this.slowFor = 0;
+      d.useCpu();
+      try {
+        localStorage.setItem(DELEGATE_KEY, JSON.stringify({ d: "CPU", k: this.deviceKey() }));
+      } catch {
+        /* no storage */
+      }
+    }
+  }
+
   /**
    * 30 fps by default (longest exposure); once the light is good and the model is fast, ask the camera for 60 fps
    * (half the capture delay). In a dim room it goes back to 30. Each switch happens at most once per session.
@@ -681,8 +805,16 @@ export class EngineRuntime implements EngineApi {
   step(now: number, delta: number): void {
     if (this.destroyed) return;
     const dt = clamp(delta, 0.001, 0.05);
-    const realDt = Math.max(0.0005, delta);
-    this.fpsEma += (1 / realDt - this.fpsEma) * 0.05;
+    // frame cap (phones: 30 fps): the 3D canvas and the 2D layer only redraw every other display frame; the fps the quality
+    // controller sees is the rate of the frames that were really drawn
+    this.accDelta += delta;
+    const cap = this.renderCap;
+    this.drawNow = cap >= 60 || now - this.lastRenderAt >= 1000 / cap - 4 || this._state === "loading";
+    if (this.drawNow) {
+      this.lastRenderAt = now;
+      this.fpsEma += (1 / Math.max(0.0005, this.accDelta) - this.fpsEma) * 0.05;
+      this.accDelta = 0;
+    }
     this.updateFit();
     // 1) detections: real ones are applied as they arrive (see startDetectLoop); synthetic ones here.
     const fake = this.fakeWin().__fake;
@@ -706,8 +838,9 @@ export class EngineRuntime implements EngineApi {
     this.lightHint(now);
 
     // 4) 2D layer
+    this.flushHud(now);
     this.fx.update(dt);
-    this.drawFx(now);
+    if (this.drawNow) this.drawFx(now);
     if (this.crowd) this.kidTracker.endFrame();
 
     // 5) debug / loading tips
@@ -715,6 +848,7 @@ export class EngineRuntime implements EngineApi {
       const gap = (now - this.debugAt) / 1000;
       this.debugAt = now;
       this.tuneCamera(Math.min(1, gap));
+      this.watchDelegate(now, gap);
       this.publishDebug();
     }
     if (this._state === "loading" && now - this.tipAt > 3200) {
@@ -729,7 +863,11 @@ export class EngineRuntime implements EngineApi {
     this.detectFrame++;
     const scanning = this._state === "scan";
     const lockedAbsent = this.tracker.lock.slots.some((s) => s.mode === "locked") && this._players.some((pl) => !pl.present);
-    if (scanning || lockedAbsent || this.detectFrame % 3 === 0) this.grabSmall();
+    // the 160x90 colour snapshot (a video read-back): 10 Hz is plenty for the clothing colours / light level
+    if ((scanning || lockedAbsent || this.detectFrame % 3 === 0) && now - this.lastGrab >= 95) {
+      this.lastGrab = now;
+      this.grabSmall();
+    }
     this.tracker.small = this.small;
     this.tracker.process(p.res, now, fake ? now : p.captureTs);
     if (this.crowd) this.kidTracker.update(this.tracker.people, now, fake ? now : p.captureTs, this.stage.w);
@@ -762,7 +900,11 @@ export class EngineRuntime implements EngineApi {
       useRunUI.getState().patch({ scan: { ...base, progress: 1, icon: "✅", title: this._playerCount === 2 ? "O‘yinchilar tanlandi!" : "O‘yinchi tanlandi!" } });
       this.setStateAfter(1100, "scanDone");
       this.scanDone = true;
-    } else useRunUI.getState().patch({ scan: base });
+    } else if (now - this.lastScanUi >= 100) {
+      // the scan card is React state: 10 Hz is smooth enough for a progress ring
+      this.lastScanUi = now;
+      useRunUI.getState().patch({ scan: base });
+    }
   }
 
   private scanDone = false;
@@ -837,6 +979,7 @@ export class EngineRuntime implements EngineApi {
   startGame(): void {
     if (this._state !== "ready" && this._state !== "results") return;
     this.audioEngine.unlock();
+    this.hudPending = null;
     this.fx.clear();
     this.result = null;
     this.time = 0;
@@ -855,7 +998,7 @@ export class EngineRuntime implements EngineApi {
   /** Called by the SceneHost once the game scene is mounted and its shaders are compiled. */
   sceneReady(): void {
     if (this._state !== "preparing") return;
-    this.qc.hold(performance.now() / 1000 + 2.5);
+    this.qc.hold(performance.now() / 1000 + 1.5);
     this.setState("countdown");
   }
 
@@ -896,6 +1039,7 @@ export class EngineRuntime implements EngineApi {
     const r = this.result;
     if (!r) return;
     this.result = null;
+    this.flushHud(performance.now(), true);
     const prevBest = readBest(this.slug);
     const isBest = r.score > prevBest;
     if (isBest) writeBest(this.slug, r.score);
@@ -962,28 +1106,44 @@ export class EngineRuntime implements EngineApi {
     }
   }
 
+  /** Values from the game are merged here and reach React at most 10 times a second (see flushHud). */
   private setHud(v: HudValues): void {
     const ui = useRunUI.getState();
     const h = ui.hud;
+    const pend = this.hudPending ?? {};
     let changed = false;
-    const next = { ...h };
-    if (v.title !== undefined && v.title !== h.title) { next.title = v.title; changed = true; };
+    if (v.title !== undefined && v.title !== (pend.title ?? h.title)) { pend.title = v.title; changed = true; }
     if (v.score !== undefined) {
       const sc = Math.round(v.score);
-      if (sc !== h.score) { next.score = sc; changed = true; };
+      if (sc !== (pend.score ?? h.score)) { pend.score = sc; changed = true; }
     }
-    if (v.combo !== undefined && v.combo !== h.combo) { next.combo = v.combo; changed = true; };
-    if (v.time !== undefined && v.time !== h.time) { next.time = v.time; changed = true; };
-    if (v.timeLabel !== undefined && v.timeLabel !== h.timeLabel) {
-      next.timeLabel = v.timeLabel;
-      changed = true;
-    }
-    if (v.lives !== undefined && v.lives !== h.lives) { next.lives = v.lives; changed = true; };
+    if (v.combo !== undefined && v.combo !== (pend.combo !== undefined ? pend.combo : h.combo)) { pend.combo = v.combo; changed = true; }
+    if (v.time !== undefined && v.time !== (pend.time !== undefined ? pend.time : h.time)) { pend.time = v.time; changed = true; }
+    if (v.timeLabel !== undefined && v.timeLabel !== (pend.timeLabel ?? h.timeLabel)) { pend.timeLabel = v.timeLabel; changed = true; }
+    if (v.lives !== undefined && v.lives !== (pend.lives !== undefined ? pend.lives : h.lives)) { pend.lives = v.lives; changed = true; }
     if (v.bar !== undefined) {
-      const b = Math.round(clamp(v.bar, 0, 1) * 100) / 100;
-      if (b !== h.bar) { next.bar = b; changed = true; };
+      const bar = Math.round(clamp(v.bar, 0, 1) * 100) / 100;
+      if (bar !== (pend.bar ?? h.bar)) { pend.bar = bar; changed = true; }
     }
-    if (changed) ui.patch({ hud: next });
+    if (changed) this.hudPending = pend;
+  }
+
+  /** Push the pending HUD values to the UI store (every 100 ms, or at once with `force`). */
+  private flushHud(now: number, force = false): void {
+    const pend = this.hudPending;
+    if (!pend || (!force && now - this.hudAt < 100)) return;
+    this.hudPending = null;
+    this.hudAt = now;
+    const ui = useRunUI.getState();
+    const next = { ...ui.hud };
+    if (pend.title !== undefined) next.title = pend.title;
+    if (pend.score !== undefined) next.score = pend.score;
+    if (pend.combo !== undefined) next.combo = pend.combo;
+    if (pend.time !== undefined) next.time = pend.time;
+    if (pend.timeLabel !== undefined) next.timeLabel = pend.timeLabel;
+    if (pend.lives !== undefined) next.lives = pend.lives;
+    if (pend.bar !== undefined) next.bar = pend.bar;
+    ui.patch({ hud: next });
   }
 
   // ---------------------------------------------------------------- drawing
@@ -1012,8 +1172,8 @@ export class EngineRuntime implements EngineApi {
     } else {
       for (const pf of this._players) {
         if (!pf.present) continue;
-        if (s === "ready" || s === "pause" || s === "results") drawSkeleton(c, pf.lm, hexToRgba(pf.color, 0.55), 3);
-        else if (showSkel && !world) drawSkeleton(c, pf.lm, hexToRgba(pf.color, 0.55), 3);
+        if (s === "ready" || s === "pause" || s === "results") drawSkeleton(c, pf.lm, this.colorOf(pf.color, 0.55), 3);
+        else if (showSkel && !world) drawSkeleton(c, pf.lm, this.colorOf(pf.color, 0.55), 3);
       }
       if ((s === "play" || s === "countdown") && !world && !crowd) {
         for (const o of this.tracker.others) {
@@ -1038,6 +1198,15 @@ export class EngineRuntime implements EngineApi {
   }
 
   private scanCands: unknown[] = [];
+  private pipScratch: { x: number; y: number; v: number }[] = [];
+  private colorCache = new Map<string, string>();
+  /** hexToRgba without a new string every frame */
+  private colorOf(hex: string, a: number): string {
+    const key = hex + a;
+    let c = this.colorCache.get(key);
+    if (!c) this.colorCache.set(key, (c = hexToRgba(hex, a)));
+    return c;
+  }
 
   /** Skeleton over the small camera picture of "world" games. */
   private drawPip(c: CanvasRenderingContext2D): void {
@@ -1053,10 +1222,20 @@ export class EngineRuntime implements EngineApi {
     c.clip();
     const ox = r.left;
     const oy = r.top;
-    for (const o of this.tracker.others) drawSkeleton(c, o.lm.map((p) => ({ x: ox + p.x * k, y: oy + p.y * k, v: p.v })), "rgba(255,90,106,.6)", 1.5, false);
+    const sc = this.pipScratch;
+    const map = (lm: { x: number; y: number; v: number }[]): { x: number; y: number; v: number }[] => {
+      for (let i = 0; i < lm.length; i++) {
+        const q = sc[i] ?? (sc[i] = { x: 0, y: 0, v: 0 });
+        q.x = ox + lm[i].x * k;
+        q.y = oy + lm[i].y * k;
+        q.v = lm[i].v;
+      }
+      return sc;
+    };
+    for (const o of this.tracker.others) drawSkeleton(c, map(o.lm), "rgba(255,90,106,.6)", 1.5, false);
     for (const pf of this._players) {
       if (!pf.present) continue;
-      drawSkeleton(c, pf.lm.map((p) => ({ x: ox + p.x * k, y: oy + p.y * k, v: p.v })), hexToRgba(pf.color, 0.95), 2.2, true);
+      drawSkeleton(c, map(pf.lm), this.colorOf(pf.color, 0.95), 2.2, true);
     }
     c.restore();
     void h;

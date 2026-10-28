@@ -219,6 +219,54 @@ export const ALL_GAMES: GameInfo[] = [
     stars: [15, 35, 60],
     color: "#3b8bff",
   },
+  {
+    slug: "devor-bolalar",
+    title: "Devordan o‘tamiz",
+    icon: "🧱",
+    short: "Devor keladi — teshikdagi shaklga kiring!",
+    description: "Mehribon devor sizga qarab siljiydi. Unda rasmdagidek shakl: qo‘llar tepada, qo‘llar yonda, yulduz, o‘tirish. Shaklga kirgan bola devordan o‘tadi va yulduz oladi!",
+    tip: "Rasmdagidek turing — hammamiz birga o‘tamiz",
+    rules: ["Rasmdagi shaklga qarang.", "Devor kelguncha o‘sha shaklga keling.", "To‘g‘ri tursangiz — devordan o‘tasiz, yulduz olasiz. Yutqazish yo‘q!"],
+    bodyParts: ["butun-tana"],
+    difficulty: "oson",
+    kidsFriendly: true,
+    audience: "bogcha",
+    twoPlayers: false,
+    stars: [10, 22, 40],
+    color: "#e0703a",
+  },
+  {
+    slug: "havoda-rasm",
+    title: "Havoda rasm",
+    icon: "🎨",
+    short: "Qo‘llaringiz bilan havoda rasm chizing!",
+    description: "Har bir bolaning qo‘llari o‘z rangida iz qoldiradi va hammasi bitta umumiy rasmga aylanadi. Ora-sira «Quyosh chizamiz!» deb so‘raladi — shaklga yaqin chizsangiz, yulduz va chaqnoqlar paydo bo‘ladi. Qarsak chalsangiz — salyut!",
+    tip: "Qo‘lni ko‘tarib havoda chizing",
+    rules: ["Qo‘lni ko‘tarsangiz — rangli iz qoladi.", "Quyosh, yomg‘ir, to‘lqin — birga chizamiz.", "Qarsak chalsangiz salyut otiladi. Oxirida umumiy rasm chiqadi!"],
+    bodyParts: ["qollar"],
+    difficulty: "oson",
+    kidsFriendly: true,
+    audience: "bogcha",
+    twoPlayers: false,
+    stars: [10, 22, 40],
+    color: "#ff7ad9",
+  },
+  {
+    slug: "sanaymiz",
+    title: "Sanaymiz",
+    icon: "🔢",
+    short: "Sakrab, qarsak chalib sanaymiz, ranglarni topamiz!",
+    description: "Katta raqam va shuncha rasm ko‘rinadi: «3 marta sakrang!», «2 marta qarsak!». Har bir bolaning sakrashi o‘z rasmida sanaladi. Yana rangli sharlar uchadi: «Qizil sharni ushlang!». Topshiriqni bajargan har bir bola yulduz oladi.",
+    tip: "Raqamni ko‘ring, shuncha marta sakrang yoki qarsak chaling",
+    rules: ["Raqamga qarang va shuncha marta sakrang yoki qarsak chaling.", "Aytilgan rangdagi sharga qo‘l tekkizing.", "Bajargan bola yulduz oladi. Yutqazish yo‘q!"],
+    bodyParts: ["butun-tana"],
+    difficulty: "oson",
+    kidsFriendly: true,
+    audience: "bogcha",
+    twoPlayers: false,
+    stars: [10, 22, 40],
+    color: "#2fcf5a",
+  },
   // demo / e2e game of the kids kit (games/bogcha/demo): playable at /play/bogcha-demo, not listed
   {
     slug: "bogcha-demo",
@@ -240,7 +288,7 @@ export const ALL_GAMES: GameInfo[] = [
 ];
 
 /** Games released on the site right now; the rest come back in a later stage. */
-export const ACTIVE_SLUGS = ["meva-ninja", "baliq-ovi", "mashina", "pufakchalar", "qotib-qol", "hayvonlar", "baliqcha", "bogcha-demo"] as const;
+export const ACTIVE_SLUGS = ["meva-ninja", "baliq-ovi", "mashina", "pufakchalar", "qotib-qol", "hayvonlar", "baliqcha", "devor-bolalar", "havoda-rasm", "sanaymiz", "bogcha-demo"] as const;
 
 export const GAMES: GameInfo[] = ALL_GAMES.filter((g) => (ACTIVE_SLUGS as readonly string[]).includes(g.slug));
 

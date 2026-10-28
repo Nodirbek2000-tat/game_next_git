@@ -9,6 +9,8 @@ export interface DetectorInfo {
   poseModel: PoseModelName;
   delegate: { pose: Delegate; hand: Delegate | null };
   hands: boolean;
+  /** startup benchmark of the worker (median ms per frame of each delegate; null = not measured, Infinity = failed) */
+  bench?: { gpu: number | null; cpu: number | null } | null;
 }
 
 export interface DetectorOptions {
@@ -18,6 +20,8 @@ export interface DetectorOptions {
   numPoses?: number;
   /** MediaPipe pose confidence (detection / presence / tracking), default 0.5; crowd games lower it for small bodies */
   minConf?: number;
+  /** "auto" (default) benchmarks the GPU and the CPU delegate at startup and keeps the faster one; a fixed value skips the benchmark */
+  delegate?: "auto" | Delegate;
   /** try a Web Worker first (falls back to the main thread when the worker cannot start) */
   preferWorker: boolean;
   onProgress?: (pct: number, label: string) => void;
@@ -25,7 +29,7 @@ export interface DetectorOptions {
 
 /** Per frame options (chosen by the runtime from the measured light and CPU load). */
 export interface DetectOptions {
-  /** longest side of the image sent to the model (default 640; the pose models work on 256 px internally) */
+  /** longest side of the image sent to the model (default 480; the pose models work on 256 px internally) */
   maxSide?: number;
   /** brighten the frame with this lookup table first (dim camera), see lowLight.ts */
   lut?: Uint8Array | null;
@@ -37,10 +41,16 @@ interface Backend {
   /** resolves null when the back-end is still busy with the previous frame */
   detect(video: HTMLVideoElement, ts: number, wantHands: boolean, opts?: DetectOptions): Promise<DetectionResult | null>;
   setConfidence(c: Confidence): void;
+  /** how many bodies the pose model follows (fewer = faster) */
+  setPoses(n: number): void;
+  /** leave the GPU delegate (it is slow on this machine right now); resolves nothing, `info.delegate.pose` changes when done */
+  useCpu(): void;
   close(): void;
 }
 
-const MAX_SIDE = 640;
+const MAX_SIDE = 480;
+/** The brightening pass (CPU, main thread) never works on more than this many px: the pose models look at 256 px anyway. */
+const ENHANCE_SIDE = 320;
 
 /** Scratch canvas for the brightened frame (the camera picture is never modified, only the copy sent to the model). */
 class Enhancer {
@@ -58,7 +68,7 @@ class Enhancer {
   render(video: HTMLVideoElement, side: number, lut: Uint8Array): { canvas: HTMLCanvasElement; image: ImageData } {
     const vw = video.videoWidth;
     const vh = video.videoHeight;
-    const k = Math.min(1, side / Math.max(vw, vh));
+    const k = Math.min(1, Math.min(side, ENHANCE_SIDE) / Math.max(vw, vh));
     const w = Math.max(2, Math.round(vw * k));
     const h = Math.max(2, Math.round(vh * k));
     if (this.c.width !== w || this.c.height !== h) {
@@ -113,6 +123,8 @@ class WorkerBackend implements Backend {
         const p = this.pending;
         this.pending = null;
         p.resolve({ pose: m.pose as PoseResultLike | null, hand: m.hand as HandResultLike | null });
+      } else if (m.type === "delegate") {
+        this.info = { ...this.info, delegate: { ...this.info.delegate, pose: m.pose as Delegate } };
       } else if (m.type === "error") {
         console.warn("tracking worker:", m.message);
         if (this.pending) {
@@ -135,7 +147,7 @@ class WorkerBackend implements Backend {
       const timer = setTimeout(() => {
         worker.terminate();
         reject(new Error("worker timeout"));
-      }, 45000);
+      }, 60000);
       const onMsg = (e: MessageEvent): void => {
         const m = e.data;
         if (m.type === "progress") opts.onProgress?.(m.pct, m.label);
@@ -143,7 +155,7 @@ class WorkerBackend implements Backend {
           clearTimeout(timer);
           worker.removeEventListener("message", onMsg);
           worker.removeEventListener("error", onErr);
-          resolve(new WorkerBackend(worker, { where: "worker", poseModel: opts.poseModel, delegate: { pose: m.delegate.pose, hand: opts.hands ? m.delegate.hand : null }, hands: opts.hands }));
+          resolve(new WorkerBackend(worker, { where: "worker", poseModel: opts.poseModel, delegate: { pose: m.delegate.pose, hand: opts.hands ? m.delegate.hand : null }, hands: opts.hands, bench: m.bench ?? null }));
         } else if (m.type === "error") {
           clearTimeout(timer);
           worker.terminate();
@@ -157,7 +169,7 @@ class WorkerBackend implements Backend {
       };
       worker.addEventListener("message", onMsg);
       worker.addEventListener("error", onErr);
-      worker.postMessage({ type: "init", origin: location.origin, pose: opts.poseModel, hands: opts.hands, numPoses: opts.numPoses ?? 4, conf: opts.minConf ?? 0.5 });
+      worker.postMessage({ type: "init", origin: location.origin, pose: opts.poseModel, hands: opts.hands, numPoses: opts.numPoses ?? 2, conf: opts.minConf ?? 0.5, delegate: opts.delegate ?? "auto" });
     });
   }
 
@@ -193,6 +205,14 @@ class WorkerBackend implements Backend {
 
   setConfidence(c: Confidence): void {
     this.worker.postMessage({ type: "confidence", det: c.det, pres: c.pres, track: c.track });
+  }
+
+  setPoses(n: number): void {
+    this.worker.postMessage({ type: "poses", n });
+  }
+
+  useCpu(): void {
+    this.worker.postMessage({ type: "delegate", to: "CPU" });
   }
 
   close(): void {
@@ -246,11 +266,11 @@ class MainBackend implements Backend {
       }
     };
     const poseBuf = await fetchWithProgress(`/models/pose_landmarker_${opts.poseModel}.task`, "Tana modeli", 15, 45, opts.onProgress);
-    const pose = (await make(vision.PoseLandmarker, poseBuf, { numPoses: opts.numPoses ?? 4, minPoseDetectionConfidence: opts.minConf ?? 0.5, minPosePresenceConfidence: opts.minConf ?? 0.5, minTrackingConfidence: opts.minConf ?? 0.5 }, "pose")) as unknown as Landmarker;
+    const pose = (await make(vision.PoseLandmarker, poseBuf, { numPoses: opts.numPoses ?? 2, minPoseDetectionConfidence: opts.minConf ?? 0.5, minPosePresenceConfidence: opts.minConf ?? 0.5, minTrackingConfidence: opts.minConf ?? 0.5 }, "pose")) as unknown as Landmarker;
     let hand: Landmarker | null = null;
     if (opts.hands) {
       const handBuf = await fetchWithProgress("/models/hand_landmarker.task", "Qo‘l modeli", 65, 25, opts.onProgress);
-      hand = (await make(vision.HandLandmarker, handBuf, { numHands: 6, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5 }, "hand")) as unknown as Landmarker;
+      hand = (await make(vision.HandLandmarker, handBuf, { numHands: 4, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5 }, "hand")) as unknown as Landmarker;
     }
     opts.onProgress?.(100, "Tayyor");
     return new MainBackend(pose, hand, { where: "main", poseModel: opts.poseModel, delegate, hands: opts.hands });
@@ -292,6 +312,14 @@ class MainBackend implements Backend {
     void this.hand?.setOptions({ minHandDetectionConfidence: c.det, minHandPresenceConfidence: c.pres, minTrackingConfidence: c.track }).catch(() => undefined);
   }
 
+  setPoses(n: number): void {
+    void this.pose.setOptions({ numPoses: n }).catch(() => undefined);
+  }
+
+  useCpu(): void {
+    /* the main-thread back-end keeps its delegate */
+  }
+
   close(): void {
     try {
       this.pose.close();
@@ -329,6 +357,16 @@ export class Detector {
 
   detect(video: HTMLVideoElement, ts: number, wantHands: boolean, opts?: DetectOptions): Promise<DetectionResult | null> {
     return this.backend.detect(video, ts, wantHands, opts);
+  }
+
+  /** Switch the pose model to the CPU delegate (worker back-end only). */
+  useCpu(): void {
+    this.backend.useCpu();
+  }
+
+  /** Number of bodies the pose model follows. */
+  setPoses(n: number): void {
+    this.backend.setPoses(n);
   }
 
   /** MediaPipe confidence thresholds (lowered a little when the picture is dark). */

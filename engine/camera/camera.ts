@@ -42,6 +42,12 @@ export interface OpenedCamera {
  * (see `setCameraRate`). `max: 60` keeps a camera from going beyond what we can analyse.
  */
 export const CAMERA_IDEAL = { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 30, max: 60 } } as const;
+/** Phones / tablets: an even smaller picture (less decoding, less copying, cooler device); the models look at 256 px anyway. */
+export const CAMERA_IDEAL_MOBILE = { width: { ideal: 480 }, height: { ideal: 270 }, frameRate: { ideal: 30, max: 30 } } as const;
+
+function isPhone(): boolean {
+  return typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent);
+}
 
 /**
  * Ask for the camera right away (the browser prompt appears instantly). Tries the saved device first,
@@ -51,7 +57,7 @@ export async function openCamera(savedDeviceId?: string): Promise<OpenedCamera> 
   if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
     throw Object.assign(new Error("noapi"), { name: "NoAPI" });
   }
-  const ideal = CAMERA_IDEAL;
+  const ideal = isPhone() ? CAMERA_IDEAL_MOBILE : CAMERA_IDEAL;
   const tries: (MediaTrackConstraints | boolean)[] = [];
   if (savedDeviceId) tries.push({ deviceId: { exact: savedDeviceId }, ...ideal });
   tries.push({ ...ideal, facingMode: "user" }, true);

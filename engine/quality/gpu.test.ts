@@ -18,6 +18,10 @@ describe("resolveInitialLevel", () => {
     expect(resolveInitialLevel("auto", dev({ tier: 2 })).level).toBe("medium");
     expect(resolveInitialLevel("auto", dev({ tier: 1 })).level).toBe("low");
   });
+  it("integrated GPUs and phones never start on high", () => {
+    expect(resolveInitialLevel("auto", dev({ gpu: "ANGLE (Intel, Intel(R) UHD Graphics)" })).level).toBe("medium");
+    expect(resolveInitialLevel("auto", dev({ isMobile: true })).level).toBe("low");
+  });
   it("starts lower on weak CPUs, little memory and software renderers", () => {
     expect(resolveInitialLevel("auto", dev({ cores: 4 })).level).toBe("medium");
     expect(resolveInitialLevel("auto", dev({ cores: 2 })).level).toBe("low");
