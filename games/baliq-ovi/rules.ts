@@ -38,11 +38,15 @@ export const TUNING = {
   fight: {
     limit: 1,
     kidsLimit: 1.35,
-    breakAfter: 0.7,
+    // seconds over the limit before the line snaps (the red line is a warning, not an instant loss)
+    breakAfter: 1.4,
+    /** right after the strike the line forgives more (s): a big fish's first rush does not snap it at once */
+    graceT: 3,
     escapeExtra: 18,
     landDist: 1.6,
     netDist: 5,
-    reelGain: 1.25,
+    // metres of line per reel turn and second: slow enough that a fish comes in bit by bit, not in one go
+    reelGain: 0.8,
     kidsPull: 0.6,
     pumpPull: 0.45,
   },
@@ -224,6 +228,10 @@ export class FightModel {
   S = 1;
   run = true;
   runT: number;
+  /** current retrieve speed (m/s), eased */
+  reelV = 0;
+  /** seconds since the strike */
+  age = 0;
   runDir = 1;
   /** lateral offset of the fish from the casting line (m) */
   lat = 0;
@@ -289,8 +297,11 @@ export class FightModel {
     this.counter = this.run && !kids ? counterPull(this.runDir, inp.side ?? 0) : 0;
     if (this.counter > 0) this.runT -= dt * this.counter * 1.4; // a firm side pull tires the run out sooner
     const targetT = (pullNow * 0.8 + r * 0.26 * (this.run ? 1.25 : 1) + inp.pump + (this.jumpT > 0 ? r * 0.2 : 0)) * (1 - 0.3 * this.counter);
-    this.T = lerp(this.T, targetT, 1 - Math.exp(-dt * 7.5));
-    const dD = -r * F.reelGain * inp.reelMul + (this.run ? pullNow * 2.3 * (1 - Math.min(0.8, r * 0.3)) : 0) - inp.pump * 2.5;
+    this.T = lerp(this.T, targetT, 1 - Math.exp(-dt * 4));
+    this.age += dt;
+    // the line comes in smoothly (the spool speeds up / slows down, no jumps when the hand starts or stops)
+    this.reelV = lerp(this.reelV, r * F.reelGain * inp.reelMul + inp.pump * 1.4, 1 - Math.exp(-dt * 3));
+    const dD = -this.reelV + (this.run ? pullNow * 1.8 * (1 - Math.min(0.8, r * 0.3)) : 0);
     this.D = Math.max(0, this.D + dD * dt);
     this.S = Math.max(0, this.S - dt * (0.035 + this.T * 0.07));
     // left / right
@@ -300,7 +311,8 @@ export class FightModel {
     this.ang = lerp(this.ang, targetAng, 1 - Math.exp(-dt * (this.run ? 3.2 : 1.8)));
     this.lat = Math.min(this.D, 40) * Math.sin(this.ang);
     // line break
-    if (this.T > this.limit) this.overT += dt;
+    const grace = 1 + 0.6 * Math.max(0, 1 - this.age / F.graceT);
+    if (this.T > this.limit * grace) this.overT += dt;
     else this.overT = Math.max(0, this.overT - dt * 2);
     if (!kids && this.overT > F.breakAfter) return "break";
     if (this.D > this.startD + F.escapeExtra) return "escape";

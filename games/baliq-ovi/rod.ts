@@ -74,6 +74,11 @@ export function makeFloatGeometry(color: number): THREE.BufferGeometry {
   return mergeGeometries([paint(top, color), paint(bot, 0xf4f4f4), paint(ant, 0xe8e8e8), paint(tip, 0xff3b1a)])!;
 }
 
+const MIRROR = new THREE.Matrix4().makeScale(-1, 1, 1);
+const _px = new THREE.Vector3();
+const _sx = new THREE.Vector3();
+const _ux = new THREE.Vector3();
+const _dx = new THREE.Vector3();
 const tmpDir = new THREE.Vector3();
 const tmpSide = new THREE.Vector3();
 const tmpUp = new THREE.Vector3();
@@ -92,6 +97,14 @@ export class RodMesh {
   readonly pts = new Float32Array(STATIONS * 3);
   private pos: THREE.BufferAttribute;
   private mats: THREE.Material[] = [];
+  /** per station: side and up vectors of the bent blank (for the guides) */
+  private sides = new Float32Array(STATIONS * 3);
+  private ups = new Float32Array(STATIONS * 3);
+  /** the rod frame of the last update (x side, y along the rod, z up; origin at the grip) */
+  readonly frame = new THREE.Matrix4();
+  model: RodModel | null = null;
+  /** mirrored set (left-handed player) */
+  mirror = false;
 
   constructor(handColor = 0x1b2633) {
     const g = new THREE.BufferGeometry();
@@ -149,7 +162,13 @@ export class RodMesh {
       if (tmpSide.lengthSq() < 1e-6) tmpSide.set(1, 0, 0);
       tmpSide.normalize();
       tmpUp.crossVectors(tmpSide, tmpDir).normalize();
-      const r = 0.0135 * (1 - f) + 0.0032 * f;
+      this.sides[i * 3] = tmpSide.x;
+      this.sides[i * 3 + 1] = tmpSide.y;
+      this.sides[i * 3 + 2] = tmpSide.z;
+      this.ups[i * 3] = tmpUp.x;
+      this.ups[i * 3 + 1] = tmpUp.y;
+      this.ups[i * 3 + 2] = tmpUp.z;
+      const r = 0.0118 * (1 - f) + 0.0028 * f;
       for (let j = 0; j < SIDES; j++) {
         const a = (j / SIDES) * Math.PI * 2;
         const c = Math.cos(a) * r;
@@ -178,6 +197,33 @@ export class RodMesh {
     this.crank.quaternion.setFromUnitVectors(WORLD_UP, tmpDir);
     // spin the crank around the reel axis (local x = side)
     this.crank.rotateX(reelAngle);
+    // the rod frame (the Blender parts are modelled in it)
+    this.frame.makeBasis(tmpSide, tmpDir, tmpUp).setPosition(gx, gy, gz);
+    if (this.mirror) this.frame.multiply(MIRROR);
+    this.model?.pose(this, reelAngle);
+  }
+
+  /** frame of the blank at fraction f (0 grip .. 1 tip): position, side, up */
+  stationFrame(f: number, out: THREE.Matrix4, scale: number): THREE.Matrix4 {
+    const x = f * (STATIONS - 1);
+    const i = Math.min(STATIONS - 2, Math.floor(x));
+    const t = x - i;
+    const L = (k: Float32Array, c: number): number => k[i * 3 + c] * (1 - t) + k[(i + 1) * 3 + c] * t;
+    const p = this.pts;
+    _px.set(L(p, 0), L(p, 1), L(p, 2));
+    _sx.set(L(this.sides, 0), L(this.sides, 1), L(this.sides, 2)).normalize();
+    _ux.set(L(this.ups, 0), L(this.ups, 1), L(this.ups, 2)).normalize();
+    _dx.crossVectors(_ux, _sx).normalize();
+    out.makeBasis(_sx.multiplyScalar(scale), _dx.multiplyScalar(scale), _ux.multiplyScalar(scale)).setPosition(_px);
+    if (this.mirror) out.multiply(MIRROR);
+    return out;
+  }
+
+  /** Swap the procedural handle / reel for the Blender set (rod.glb) once it is loaded. */
+  useModel(m: RodModel): void {
+    this.model = m;
+    this.handle.visible = this.reel.visible = this.crank.visible = false;
+    this.group.add(m.group);
   }
 
   /** Recompute lighting normals now and then (the tube bends). */
@@ -239,5 +285,167 @@ export class LineRibbon {
       a[o + 5] = z[i] + this.s.z * w;
     }
     this.pos.needsUpdate = true;
+  }
+}
+
+// ---------------------------------------------------------------- the Blender rod set + hands (tools/blender/baliq_rod.py)
+
+/** constants of baliq_rod.py (rod frame, metres) */
+const REEL_AXIS = new THREE.Vector3(-0.004, 0, -0.088);
+const KNOB = new THREE.Vector3(-0.058, 0, 0.05);
+const WRIST_R = new THREE.Vector3(0.05, -0.1, 0.022);
+const WRIST_L = new THREE.Vector3(-0.084, -0.0134, 0.0414);
+const GUIDES = [0.07, 0.15, 0.24, 0.34, 0.45, 0.57, 0.7, 0.84, 0.995];
+const UPPER = 0.31;
+const FORE = 0.29;
+
+let rodGltf: Promise<THREE.Object3D | null> | null = null;
+function loadRodGltf(): Promise<THREE.Object3D | null> {
+  rodGltf ??= import("three/examples/jsm/loaders/GLTFLoader.js")
+    .then(({ GLTFLoader }) => new GLTFLoader().loadAsync("/models/baliq-ovi/rod.glb"))
+    .then((g) => g.scene)
+    .catch(() => null);
+  return rodGltf;
+}
+
+const _m = new THREE.Matrix4();
+const _m2 = new THREE.Matrix4();
+const _v = new THREE.Vector3();
+const _w = new THREE.Vector3();
+const _a = new THREE.Vector3();
+const _e = new THREE.Vector3();
+const _pole = new THREE.Vector3();
+const _q2 = new THREE.Quaternion();
+const Y = new THREE.Vector3(0, 1, 0);
+
+/** A sleeve from a to b (the mesh runs y 0..1). */
+function placeSleeve(mesh: THREE.Mesh, a: THREE.Vector3, b: THREE.Vector3, thick: number): void {
+  _v.subVectors(b, a);
+  const len = _v.length();
+  _q2.setFromUnitVectors(Y, _v.divideScalar(len || 1));
+  mesh.position.copy(a);
+  mesh.quaternion.copy(_q2);
+  mesh.scale.set(thick, len, thick);
+}
+
+/**
+ * Two-bone IK: elbow between shoulder s and wrist w (bones UPPER, FORE), bending towards `pole`.
+ * The shoulder slides towards the wrist when the arm would have to stretch (it is off screen).
+ */
+function solveElbow(s: THREE.Vector3, w: THREE.Vector3, pole: THREE.Vector3, out: THREE.Vector3): void {
+  _a.subVectors(w, s);
+  let d = _a.length();
+  const max = (UPPER + FORE) * 0.985;
+  if (d > max) {
+    s.addScaledVector(_a, (d - max) / d);
+    d = max;
+  }
+  _a.divideScalar(d || 1);
+  const x = (UPPER * UPPER - FORE * FORE + d * d) / (2 * d);
+  const h = Math.sqrt(Math.max(0, UPPER * UPPER - x * x));
+  _e.copy(pole).addScaledVector(_a, -pole.dot(_a)).normalize();
+  out.copy(s).addScaledVector(_a, x).addScaledVector(_e, h);
+}
+
+export class RodModel {
+  readonly group = new THREE.Group();
+  private handle: THREE.Object3D;
+  private reel: THREE.Object3D;
+  private crank: THREE.Object3D;
+  private guides: THREE.Object3D[] = [];
+  private handR: THREE.Object3D;
+  private handL: THREE.Object3D;
+  private sleeves: THREE.Mesh[] = [];
+  private shoulderR = new THREE.Vector3();
+  private shoulderL = new THREE.Vector3();
+  private elbow = new THREE.Vector3();
+  private wrist = new THREE.Vector3();
+  private knob = new THREE.Vector3();
+
+  static async load(sleeveColor: number): Promise<RodModel | null> {
+    const root = await loadRodGltf();
+    return root ? new RodModel(root, sleeveColor) : null;
+  }
+
+  private constructor(root: THREE.Object3D, sleeveColor: number) {
+    const get = (n: string): THREE.Object3D => {
+      const o = root.getObjectByName(n);
+      if (!o) throw new Error("rod.glb: " + n);
+      const c = o.clone();
+      c.position.set(0, 0, 0);
+      c.quaternion.identity();
+      c.scale.set(1, 1, 1);
+      c.matrixAutoUpdate = false;
+      return c;
+    };
+    this.handle = get("handle");
+    this.reel = get("reel");
+    this.crank = get("crank");
+    this.handR = get("hand_r");
+    this.handL = get("hand_l");
+    const guide = get("guide");
+    for (let i = 0; i < GUIDES.length; i++) this.guides.push(i ? guide.clone() : guide);
+    const sl = root.getObjectByName("sleeve") as THREE.Mesh;
+    const cloth = (sl.material as THREE.MeshStandardMaterial).clone();
+    cloth.side = THREE.DoubleSide;
+    // a dark jacket in the player's colour
+    const hsl = { h: 0, s: 0, l: 0 };
+    new THREE.Color(sleeveColor).getHSL(hsl);
+    cloth.color.setHSL(hsl.h, hsl.s * 0.4, 0.42);
+    for (let i = 0; i < 4; i++) {
+      const m = new THREE.Mesh(sl.geometry, cloth);
+      m.frustumCulled = false;
+      this.sleeves.push(m);
+    }
+    this.group.add(this.handle, this.reel, this.crank, this.handR, this.handL, ...this.guides, ...this.sleeves);
+    // the hands / sleeves stay in the file but are not shown (only the rod set is drawn)
+    this.shoulders(null, null);
+    this.group.traverse((o) => {
+      o.layers.set(L_NOREFL);
+      o.frustumCulled = false;
+      const mesh = o as THREE.Mesh;
+      if (mesh.isMesh) for (const m of [mesh.material].flat() as THREE.MeshStandardMaterial[]) m.envMapIntensity = 0.8;
+    });
+  }
+
+  /** shoulders (world) for the arms: set by the game from the camera every frame; null = no arms */
+  shoulders(right: THREE.Vector3 | null, left: THREE.Vector3 | null): void {
+    if (right) this.shoulderR.copy(right);
+    if (left) this.shoulderL.copy(left);
+    for (const s of this.sleeves) s.visible = !!(right && left);
+    this.handR.visible = this.handL.visible = !!(right && left);
+  }
+
+  pose(rod: RodMesh, reelAngle: number): void {
+    const F = rod.frame;
+    for (const o of [this.handle, this.reel, this.handR]) o.matrix.copy(F);
+    // crank: about the reel axis
+    _m.makeRotationX(reelAngle).setPosition(REEL_AXIS);
+    this.crank.matrix.multiplyMatrices(F, _m);
+    // left hand on the knob (keeps the rod frame's orientation, follows the knob around)
+    this.knob.copy(KNOB).applyMatrix4(_m);
+    _m2.makeTranslation(this.knob.x, this.knob.y, this.knob.z);
+    this.handL.matrix.multiplyMatrices(F, _m2);
+    GUIDES.forEach((f, i) => rod.stationFrame(f, this.guides[i].matrix, 1.15 - 0.55 * f));
+    for (const o of [this.handle, this.reel, this.crank, this.handR, this.handL, ...this.guides]) o.matrixWorldNeedsUpdate = true;
+    if (!this.sleeves[0].visible) return;
+    // arms: shoulder -> elbow -> wrist, elbows down and out
+    // column 0 of the frame is the rod hand's outer side (mirrored for a left-handed player)
+    const sideSign = 1;
+    _w.set(F.elements[0], F.elements[1], F.elements[2]).normalize();
+    // right arm
+    this.wrist.copy(WRIST_R).applyMatrix4(F);
+    _pole.set(0, -1, 0).addScaledVector(_w, 0.7 * sideSign);
+    const sR = this.shoulderR;
+    solveElbow(sR, this.wrist, _pole, this.elbow);
+    placeSleeve(this.sleeves[0], sR, this.elbow, 1.12);
+    placeSleeve(this.sleeves[1], this.elbow, this.wrist, 0.92);
+    // left arm
+    this.wrist.copy(this.knob).add(WRIST_L).applyMatrix4(F);
+    _pole.set(0, -1, 0).addScaledVector(_w, -0.7 * sideSign);
+    const sL = this.shoulderL;
+    solveElbow(sL, this.wrist, _pole, this.elbow);
+    placeSleeve(this.sleeves[2], sL, this.elbow, 1.12);
+    placeSleeve(this.sleeves[3], this.elbow, this.wrist, 0.92);
   }
 }

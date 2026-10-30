@@ -67,7 +67,7 @@ export function shapeTurn(rel: number): number {
 export const FOV = 58;
 
 /** The player's eye and the rod grip (first person): the camera stands on the bridge, the grip is in front, to the right / left. */
-export const EYE = { x: 0, y: 2.3, z: 4.95, gripSide: 0.3, gripDown: 0.33, gripFwd: 0.7 } as const;
+export const EYE = { x: 0, y: 2.3, z: 4.95, gripSide: 0.25, gripDown: 0.235, gripFwd: 0.58 } as const;
 
 /** Head turn relative to a neutral pose -> target yaw in degrees. */
 export function turnToYawDeg(turn: number, neutral: number): number {

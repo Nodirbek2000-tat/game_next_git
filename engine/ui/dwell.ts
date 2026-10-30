@@ -13,6 +13,9 @@ export class DwellController {
   x = 0;
   y = 0;
   on = false;
+  /** the pointing hand is closed into a fist (needs the hand model): a fist presses the hovered button at once */
+  fist = false;
+  private prevFist = false;
   el: HTMLElement | null = null;
   private t0 = 0;
   private cool = 0;
@@ -37,6 +40,7 @@ export class DwellController {
     this.on = false;
     let best: { x: number; y: number } | null = null;
     let owner: PlayerFrame | null = null;
+    let fist = false;
     for (const pf of players) {
       if (!pf.present) continue;
       const L = pf.lm;
@@ -50,9 +54,11 @@ export class DwellController {
         if (vis && p.y < limit && (!best || p.y < best.y)) {
           best = p;
           owner = pf;
+          fist = hand?.shape === "fist";
         }
       }
     }
+    this.fist = fist;
     if (!best || !owner) return;
     const c = owner.center;
     const gx = c.x + (best.x - c.x) * this.cfg.reach;
@@ -95,7 +101,16 @@ export class DwellController {
         this.onHover();
       }
     }
-    if (hit && now > this.cool) {
+    const fistEdge = this.fist && !this.prevFist;
+    this.prevFist = this.fist;
+    if (hit && now > this.cool && fistEdge) {
+      // closing the hand over a button presses it right away
+      this.cool = now + this.cfg.cooldownMs;
+      this.t0 = now + this.cfg.cooldownMs;
+      hit.style.setProperty("--p", "0");
+      this.onSelect();
+      hit.click();
+    } else if (hit && now > this.cool) {
       const k = clamp((now - this.t0) / this.cfg.dwellMs, 0, 1);
       hit.style.setProperty("--p", String(k));
       if (k >= 1) {

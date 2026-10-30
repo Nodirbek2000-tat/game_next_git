@@ -5,11 +5,12 @@ import { useFrame, useThree } from "@react-three/fiber";
 import type * as THREE from "three";
 import { useOverlayDraw, type SceneProps } from "@/engine";
 import { BaliqRig } from "./game";
+import { SPECIES } from "./species";
 
 declare global {
   interface Window {
     /** test / debug hook: snapshot of the running game */
-    __baliq?: { snapshot(): Record<string, unknown>; rig: BaliqRig };
+    __baliq?: { snapshot(): Record<string, unknown>; rig: BaliqRig; species: typeof SPECIES };
   }
 }
 
@@ -24,7 +25,7 @@ export function BaliqScene({ engine }: SceneProps) {
     if (!group) return;
     const r = new BaliqRig(engine, group, { scene, camera, gl });
     rig.current = r;
-    window.__baliq = { snapshot: () => r.snapshot(), rig: r };
+    window.__baliq = { snapshot: () => r.snapshot(), rig: r, species: SPECIES };
     return () => {
       r.dispose();
       rig.current = null;

@@ -9,7 +9,7 @@ import { AState, type Bait, type FishSim } from "./fishai";
 import type { Ripples, Splashes } from "./effects";
 import type { FishViews } from "./fishViews";
 import type { LocationConfig, TimeOfDayPreset, WeatherState } from "./locations";
-import { LineRibbon, makeAnglerGeometry, makeArmsGeometry, makeFloatGeometry, RodMesh } from "./rod";
+import { LineRibbon, makeAnglerGeometry, makeArmsGeometry, makeFloatGeometry, RodMesh, RodModel } from "./rod";
 import {
   castDistance, castYaw, clamp, emptyTally, FightModel, lerp, lineInDanger, strikeWindow, TUNING, type FightEvent, type GameMode, type PlayerTally, type Tuning,
 } from "./rules";
@@ -61,6 +61,15 @@ export interface Host {
   rollW(sp: SpeciesDef): number;
   recycle(agentIdx: number): void;
 }
+
+/** the cast swing (s, rad): back-load until t1, forward snap until t2, settle until T */
+const CAST_ANIM = { t1: 0.11, t2: 0.25, T: 0.95, back: 1.35, low: 0.08 };
+const easeOut = (u: number): number => 1 - (1 - u) * (1 - u);
+const easeIn = (u: number): number => u * u * u;
+const smoothstep = (u: number): number => {
+  const x = Math.min(1, Math.max(0, u));
+  return x * x * (3 - 2 * x);
+};
 
 export class Angler {
   state: AnglerState = "ready";
@@ -142,6 +151,16 @@ export class Angler {
   private grip = new THREE.Vector3();
   private clickAcc = 0;
   private tipHand = new THREE.Vector3();
+  /** pose animations: time since the cast / the strike, the rod pitch when the cast started */
+  private castAnimT = 99;
+  /** reeling in an empty line: eased speed (m/s) */
+  private retrieveV = 0;
+  /** in "ready": the float hangs under the tip (after the first cast) */
+  private floatShown = false;
+  private castFrom = 0.5;
+  private strikeT = 99;
+  private lefty: boolean;
+  private disposed = false;
 
   constructor(
     readonly slot: number,
@@ -151,6 +170,7 @@ export class Angler {
     group: THREE.Group,
   ) {
     const lefty = host.engine.players[slot]?.dominant === "L";
+    this.lefty = lefty;
     this.gx = EYE.x + gx;
     this.gy = EYE.y - EYE.gripDown;
     this.gz = EYE.z - EYE.gripFwd;
@@ -166,6 +186,8 @@ export class Angler {
     this.body.visible = false;
     this.arms = new THREE.Mesh(makeArmsGeometry(color, lefty), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8 }));
     this.arms.frustumCulled = false;
+    // no first-person hands: only the rod is drawn
+    this.arms.visible = false;
     this.arms.layers.set(3);
     // a bright, big float is easy to find (also for small children)
     this.floatMesh = new THREE.Mesh(makeFloatGeometry(color), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.4, emissive: color, emissiveIntensity: 0.35 }));
@@ -175,6 +197,12 @@ export class Angler {
     group.add(this.body, this.arms, this.rod.group, this.ribbon.mesh, this.floatMesh);
     this.line.surface = (x, z) => host.water(x, z);
     this.resetRoundVisuals();
+    // the Blender rod set with the player's hands and sleeves replaces the procedural reel / arms
+    this.rod.mirror = lefty;
+    void RodModel.load(color).then((m) => {
+      if (!m || this.disposed) return;
+      this.rod.useModel(m);
+    });
   }
 
   get fighting(): boolean {
@@ -185,6 +213,7 @@ export class Angler {
     this.setState("ready");
     this.fight = null;
     this.floatMesh.visible = false;
+    this.floatShown = false;
     this.bait.active = false;
     this.gest.reset();
     this.tipHand.set(this.gx, this.gy + 1.2, this.gz - 2);
@@ -310,6 +339,8 @@ export class Angler {
     this.floatMesh.visible = true;
     this.setState("fly");
     this.whip.trigger(power);
+    this.castAnimT = 0;
+    this.castFrom = this.rodPitch;
     this.trailLen = 0;
     h.engine.audio.whoosh(0.25 + power * 0.5);
     h.say(this, `Tashlandi! ${Math.round(D)} m`, 1200);
@@ -358,9 +389,10 @@ export class Angler {
     this.bait.x = this.fx;
     this.bait.z = this.fz;
     // reeling in to re-cast
-    if (s.crank > 0.5 && this.state !== "bite") {
+    this.retrieveV = lerp(this.retrieveV, s.crank > 0.5 && this.state !== "bite" ? s.crank * 0.75 : 0, 1 - Math.exp(-dt * 3));
+    if (this.retrieveV > 0.05) {
       const d = Math.hypot(this.fx - this.gx, this.fz - this.gz);
-      const nd = Math.max(0, d - s.crank * 1.4 * dt);
+      const nd = Math.max(0, d - this.retrieveV * dt);
       const k = d > 1e-3 ? nd / d : 0;
       this.fx = this.gx + (this.fx - this.gx) * k;
       this.fz = this.gz + (this.fz - this.gz) * k;
@@ -406,6 +438,7 @@ export class Angler {
         this.dip = 0;
         h.say(this, "Kech qoldingiz — baliq xo‘rakni yeb ketdi", 2000);
         h.engine.audio.bad();
+        this.strikeT = 0;
         this.reelBack(true);
       }
     }
@@ -467,7 +500,7 @@ export class Angler {
 
   private reelBack(missed = false): void {
     this.setState("ready");
-    this.floatMesh.visible = false;
+    this.floatShown = true;
     this.bait.active = false;
     this.dip = 0;
     if (!missed) this.say("Qarmoq qaytdi — qaytadan tashlang", 1600);
@@ -492,6 +525,7 @@ export class Angler {
     this.dip = 0;
     this.strain = 0.3;
     this.setState("fight");
+    this.strikeT = 0;
     this.netOffer = false;
     h.sfx.splash(true);
     h.engine.fx.shake(8, 0.25);
@@ -557,6 +591,7 @@ export class Angler {
     this.netOffer = false;
     this.bait.active = false;
     this.floatMesh.visible = false;
+    this.floatShown = false;
     h.engine.fx.shake(6, 0.2);
     h.engine.audio.bad();
     h.say(this, text, 2400);
@@ -594,9 +629,10 @@ export class Angler {
   }
 
   private updateShow(): void {
-    if (this.stT > 3.0) {
+    if (this.stT > 4.0) {
       this.releaseFish();
       this.setState("ready");
+      this.floatShown = true;
       this.say("Yana tashlang!", 1500);
     }
   }
@@ -615,8 +651,44 @@ export class Angler {
     const h = this.host;
     const t = h.t;
     const cam = h.camera;
+    // ---- pose animation: offsets of the hands (view frame: y up, z back) and of the rod pitch
+    this.castAnimT += dt;
+    this.strikeT += dt;
+    let offY = Math.sin(t * 1.7 + this.slot) * 0.004;
+    let offZ = Math.sin(t * 1.1 + this.slot) * 0.003;
+    let dPitch = 0;
+    let castPitch: number | null = null;
+    const ct = this.castAnimT;
+    if (ct < CAST_ANIM.T) {
+      // load the rod back over the shoulder, snap it forward (the line goes), follow through and settle
+      const back = Math.max(this.castFrom, CAST_ANIM.back);
+      if (ct < CAST_ANIM.t1) {
+        const u = easeOut(ct / CAST_ANIM.t1);
+        castPitch = lerp(this.castFrom, back, u);
+        offY += 0.07 * u;
+        offZ += 0.06 * u;
+      } else if (ct < CAST_ANIM.t2) {
+        const u = easeIn((ct - CAST_ANIM.t1) / (CAST_ANIM.t2 - CAST_ANIM.t1));
+        castPitch = lerp(back, CAST_ANIM.low, u);
+        offY += lerp(0.07, -0.06, u);
+        offZ += lerp(0.06, -0.17, u);
+      } else {
+        const u = smoothstep((ct - CAST_ANIM.t2) / (CAST_ANIM.T - CAST_ANIM.t2));
+        castPitch = lerp(CAST_ANIM.low, (20 * Math.PI) / 180, u);
+        offY += lerp(-0.06, 0, u);
+        offZ += lerp(-0.17, 0, u);
+      }
+    }
+    if (this.strikeT < 0.55) {
+      // the strike: a short hard lift of the rod and both hands towards the chest, then into the fight
+      const u = this.strikeT / 0.55;
+      const b = u < 0.2 ? easeOut(u / 0.2) : 1 - smoothstep((u - 0.2) / 0.8);
+      dPitch += 0.62 * b;
+      offY += 0.06 * b;
+      offZ += 0.09 * b;
+    }
     // ---- grip: in the view frame, in front of the eye (the arms are drawn there too)
-    this.grip.set(this.gripOff, -EYE.gripDown, -EYE.gripFwd).applyQuaternion(cam.quaternion).add(cam.position);
+    this.grip.set(this.gripOff, -EYE.gripDown + offY, -EYE.gripFwd + offZ).applyQuaternion(cam.quaternion).add(cam.position);
     this.arms.quaternion.copy(cam.quaternion);
     this.arms.position.set(cam.position.x + Math.cos(h.viewYaw) * this.anchorOff, cam.position.y, cam.position.z + Math.sin(h.viewYaw) * this.anchorOff);
     const gx = this.grip.x;
@@ -636,7 +708,7 @@ export class Angler {
     let pitchDeg = clamp(this.sig.pitch, 8, 70);
     if (this.state === "wait" || this.state === "nibble" || this.state === "bite") pitchDeg = lerp(pitchDeg, 20, 0.7);
     else if (fighting) pitchDeg = lerp(pitchDeg, 42, 0.55);
-    this.rodPitch = lerp(this.rodPitch, (pitchDeg * Math.PI) / 180, 1 - Math.exp(-dt * 14));
+    this.rodPitch = castPitch ?? lerp(this.rodPitch, (pitchDeg * Math.PI) / 180, 1 - Math.exp(-dt * 14));
     const f = this.fight;
     const T = clamp(f?.T ?? 0, 0, 1.3);
     // the bend settles where the load wants it; the cast whip rings on top of it
@@ -645,14 +717,16 @@ export class Angler {
     this.bend = this.whip.bend;
     // towards where the fish pulls: the tip is dragged sideways
     this.bendYaw = lerp(this.bendYaw, fighting && f ? clamp(f.ang * 0.9, -0.45, 0.45) * clamp(T, 0.25, 1) : 0, 1 - Math.exp(-dt * 6));
-    this.rod.update(gx, gy, gz, this.rodYaw, this.rodPitch + this.whip.kick, this.bend, this.bendYaw, this.reelAngle);
+    this.rod.update(gx, gy, gz, this.rodYaw, this.rodPitch + dPitch + this.whip.kick * (castPitch === null ? 1 : 0.3), this.bend, this.bendYaw, this.reelAngle);
     this.rod.fixNormals();
 
     // ---- float buoyancy (spring towards the water level minus the dip)
     if (this.state === "ready") {
-      this.fx = this.rod.tip.x;
-      this.fz = this.rod.tip.z;
-      this.fy = this.rod.tip.y - 0.9;
+      // the float hangs under the tip; after a reel-back it swings in from where it was (no jump)
+      const kk = 1 - Math.exp(-dt * 3.5);
+      this.fx = lerp(this.fx, this.rod.tip.x, kk);
+      this.fz = lerp(this.fz, this.rod.tip.z, kk);
+      this.fy = lerp(this.fy, this.rod.tip.y - 0.9, kk);
     } else if (this.state !== "fly" && this.state !== "show") {
       const w = h.water(this.fx, this.fz);
       const target = w + 0.03 - this.dip;
@@ -660,7 +734,7 @@ export class Angler {
       this.fvy += (k * (target - this.fy) - 9 * this.fvy) * dt;
       this.fy += this.fvy * dt;
     }
-    this.floatMesh.visible = this.state !== "show";
+    this.floatMesh.visible = this.state !== "show" && (this.state !== "ready" || this.floatShown);
     this.floatMesh.position.set(this.fx, this.fy, this.fz);
     // far away the float would be a speck: grow it with the distance to the camera (kids: bigger still)
     const far = Math.max(0, Math.hypot(this.fx - cam.position.x, this.fz - cam.position.z) - 6);
@@ -679,10 +753,10 @@ export class Angler {
     this.slackT += dt;
     switch (this.state) {
       case "ready":
-        len = 1.25;
-        ex = tip.x + Math.sin(t * 1.3 + this.slot) * 0.05;
-        ey = tip.y - 0.9;
-        ez = tip.z + Math.cos(t * 1.1) * 0.05;
+        // the line ends at the float while it swings in under the tip
+        len = Math.max(1.25, span * 1.02);
+        ex = this.fx + Math.sin(t * 1.3 + this.slot) * 0.05;
+        ez = this.fz + Math.cos(t * 1.1) * 0.05;
         break;
       case "fly": {
         // the line trails behind the float along the path it has flown
@@ -759,13 +833,14 @@ export class Angler {
       obj.scale.setScalar(this.fishScale(sp, this.weight));
       if (!sp.junk) h.views.animate(this.agent, sp, h.t * 14 + this.slot, clamp(0.3 + (f.run ? 0.7 : 0.2) * f.S, 0, 1));
     } else if (this.state === "show") {
-      const k = clamp(this.stT / 0.6, 0, 1);
-      const e = 1 - Math.pow(1 - k, 3);
+      // lifted out of the water on the line, slowly, then held up
+      const k = clamp(this.stT / 1.6, 0, 1);
+      const e = k * k * (3 - 2 * k);
       // the catch is held up in front of the player's eyes
       const cp = h.camera.position;
       this.showTo.set(cp.x + Math.sin(h.viewYaw) * 2.6, cp.y - 0.3, cp.z - Math.cos(h.viewYaw) * 2.6);
       obj.position.lerpVectors(this.showFrom, this.showTo, e);
-      obj.position.y += Math.sin(k * Math.PI) * 0.9;
+      obj.position.y += Math.sin(k * Math.PI) * 0.35;
       obj.rotation.set(0, -h.viewYaw + Math.sin(h.t * 1.4) * 0.5, Math.sin(h.t * 9) * 0.25 * (1 - k * 0.6));
       obj.scale.setScalar(this.fishScale(sp, this.weight) * (sp.junk ? 1.4 : 1.3));
       obj.visible = true;
@@ -780,6 +855,7 @@ export class Angler {
   }
 
   dispose(): void {
+    this.disposed = true;
     this.floatMesh.geometry.dispose();
   }
 }

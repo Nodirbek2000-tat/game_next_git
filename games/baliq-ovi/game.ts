@@ -19,6 +19,7 @@ import { GameSfx } from "./sfx";
 import { SPECIES, pickSpecies, rollWeight, type SpeciesDef } from "./species";
 import { makeDepthTexture, makeWaterNormal } from "./textures";
 import { buildWaterGeometry, createWaterMaterial, L_NOREFL, L_UNDER, makeTint, WaterPasses } from "./water";
+import { Scenery } from "./scenery";
 import { buildWorld, flattenModel, updateWorld, type WorldObjects } from "./world";
 import { collectionRects, lobbyRects, optionRects } from "./layout";
 import { drawOverlay } from "./overlay";
@@ -123,6 +124,8 @@ export class BaliqRig implements Host {
   private baits: Bait[] = [];
   private cam: THREE.PerspectiveCamera;
   private saved: { fov: number; near: number; far: number; pos: THREE.Vector3; exposure: number; layers: number };
+  private scenery: Scenery | null = null;
+  private savedEnv!: { env: THREE.Texture | null; intensity: number; rot: THREE.Euler };
   private hudAt = 0;
   private birdAt = 0;
   private sfxAt = 0;
@@ -178,7 +181,8 @@ export class BaliqRig implements Host {
     this.cam.fov = FOV;
     this.cam.rotation.order = "YXZ";
     this.cam.near = 0.1;
-    this.cam.far = 900 * (0.55 + 0.45 * engine.quality.viewDistance);
+    // the ranges stand 0.4 - 1.6 km away (they are one mesh: cheap at any distance)
+    this.cam.far = 2200;
     this.cam.layers.enable(L_NOREFL);
     this.cam.updateProjectionMatrix();
     three.gl.toneMappingExposure = this.preset.exposure;
@@ -209,6 +213,11 @@ export class BaliqRig implements Host {
     this.waterMat.uniforms.uSkyTop.value.copy(this.world.skyMat.uniforms.uTop.value);
     this.waterMat.uniforms.uSkyHor.value.copy(this.world.skyMat.uniforms.uHor.value);
     this.waterMat.uniforms.uFog.value.copy(this.world.fog.color);
+    this.savedEnv = { env: three.scene.environment, intensity: three.scene.environmentIntensity, rot: three.scene.environmentRotation.clone() };
+    this.world.loadSky(three.gl, three.scene, (c) => {
+      this.waterMat.uniforms.uFog.value.copy(c);
+      this.waterMat.uniforms.uSkyHor.value.copy(c);
+    });
     const posts = this.world.posts.slice(0, 8);
     posts.forEach((p, i) => (this.waterMat.uniforms.uPosts.value[i] as THREE.Vector2).set(p[0], p[1]));
     this.waterMat.uniforms.uPostCount.value = posts.length;
@@ -292,7 +301,8 @@ export class BaliqRig implements Host {
   private loadModels(): void {
     const lib = this.assets;
     const w = this.world;
-    const swap = (key: string, targets: THREE.Mesh[]): void => {
+    /** keep: the procedural material stays (its sway / underwater tint), it only takes the model's textures */
+    const swap = (key: string, targets: THREE.Mesh[], keep = false): void => {
       void lib.model(key).then((o) => {
         if (!o || this.disposedFlag) return;
         const f = flattenModel(o);
@@ -300,16 +310,31 @@ export class BaliqRig implements Host {
         for (const t of targets) {
           t.geometry.dispose();
           t.geometry = f.geometry;
-          if (f.material) t.material = f.material;
+          const src = f.material as THREE.MeshStandardMaterial | null;
+          if (keep && src) {
+            const m = t.material as THREE.MeshLambertMaterial;
+            m.map = src.map;
+            m.normalMap = src.normalMap;
+            m.flatShading = false;
+            m.color.set(0xffffff);
+            m.needsUpdate = true;
+          } else if (src) t.material = src;
         }
       });
     };
+    // firs + grass (CC0, processed in Blender): real models near the camera, impostors on the far shores
+    this.scenery = new Scenery(w.treeSpots, w.grassSpots, new THREE.Vector3(EYE.x, EYE.y, EYE.z), 34, w.sway);
+    this.scenery.onTrees = () => {
+      w.parts.trunks.visible = false;
+      w.parts.crowns.visible = false;
+    };
+    this.group.add(this.scenery.group);
     void lib.model("bridge").then((o) => o && !this.disposedFlag && w.setBridgeModel(o));
     swap("tree", [w.parts.crowns]);
     void lib.model("tree").then((o) => o && (w.parts.trunks.visible = false));
-    swap("rock", [w.parts.shoreRocks, w.parts.bedRocks]);
-    swap("weed", [w.parts.weeds]);
-    swap("reed", [w.parts.reeds]);
+    swap("rock", [w.parts.shoreRocks, w.parts.bedRocks], true);
+    swap("weed", [w.parts.weeds], true);
+    swap("reed", [w.parts.reeds], true);
     swap("boot", this.views.boots);
     swap("bottle", this.views.bottles);
     swap("float", this.anglers.map((a) => a.floatMesh));
@@ -990,7 +1015,11 @@ export class BaliqRig implements Host {
     this.cam.updateProjectionMatrix();
     this.three.gl.toneMappingExposure = s.exposure;
     this.three.scene.fog = null;
+    this.three.scene.environment = this.savedEnv.env;
+    this.three.scene.environmentIntensity = this.savedEnv.intensity;
+    this.three.scene.environmentRotation.copy(this.savedEnv.rot);
     this.passes.dispose();
+    this.scenery?.dispose();
     this.views.dispose();
     for (const a of this.anglers) a.dispose();
     for (const d of this.disposables) d.dispose();

@@ -74,6 +74,28 @@ export const ALL_GAMES: GameInfo[] = [
     color: "#ffaa28",
   },
   {
+    slug: "poyga",
+    title: "Shahar simulyatori",
+    icon: "🏎️",
+    short: "Ochiq shaharda superkar: istalgan ko‘chaga buriling, haqiqiy fizika.",
+    description:
+      "Cheksiz ochiq shahar: hovlili kvartallar, shisha minoralar, mahallalar, bog‘lar va masjidlar. Svetoforlar ishlaydi, mashinalar bo‘lakda yuradi, piyodalar trotuarda. Mashina haqiqiy fizika bilan: shinalar sirpanadi, uzatmalar almashadi, tormoz va qo‘l tormozi.",
+    tip: "Orqaroq turing — oyoqlaringiz ko‘rinsin",
+    rules: [
+      "O‘ng tizza — gaz, chap tizza — tormoz.",
+      "Ikki qo‘l bilan xayoliy rulni buring.",
+      "To‘xtab, tormozni ushlab tursangiz — orqaga yurish (R).",
+      "Ikki qo‘l tepada — kamera almashadi (orqadan / salon).",
+    ],
+    bodyParts: ["oyoqlar", "qollar"],
+    difficulty: "orta",
+    kidsFriendly: false,
+    audience: "umumiy",
+    twoPlayers: false,
+    stars: [2000, 8000, 20000],
+    color: "#ff3b30",
+  },
+  {
     slug: "meva-ninja",
     title: "Meva Ninja",
     icon: "🍉",
@@ -288,7 +310,7 @@ export const ALL_GAMES: GameInfo[] = [
 ];
 
 /** Games released on the site right now; the rest come back in a later stage. */
-export const ACTIVE_SLUGS = ["meva-ninja", "baliq-ovi", "mashina", "pufakchalar", "qotib-qol", "hayvonlar", "baliqcha", "devor-bolalar", "havoda-rasm", "sanaymiz", "bogcha-demo"] as const;
+export const ACTIVE_SLUGS = ["meva-ninja", "baliq-ovi", "mashina", "poyga", "pufakchalar", "qotib-qol", "hayvonlar", "baliqcha", "devor-bolalar", "havoda-rasm", "sanaymiz", "bogcha-demo"] as const;
 
 export const GAMES: GameInfo[] = ALL_GAMES.filter((g) => (ACTIVE_SLUGS as readonly string[]).includes(g.slug));
 

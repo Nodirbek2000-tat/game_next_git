@@ -127,7 +127,7 @@ void main(){
   foam = clamp(foam, 0., 1.);
   col = mix(col, vec3(0.92, 0.96, 0.98)*uDim, foam*0.65);
   alpha = max(alpha, foam*0.8);
-  col = mix(col, uFog, smoothstep(70., 360., dist));
+  col = mix(col, uFog, smoothstep(150., 900., dist)*0.85);
   gl_FragColor = vec4(col, alpha);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>

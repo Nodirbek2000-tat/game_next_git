@@ -141,7 +141,8 @@ export function fishPositions(sp: SpeciesDef, out: Float32Array): void {
 /** Body bend while swimming: amplitude grows towards the tail. `base` = rest positions; writes into `pos`. */
 export function swimBend(base: Float32Array, pos: Float32Array, L: number, phase: number, amp: number): void {
   const k = 7 / L;
-  for (let i = 0; i < FISH_VERTS; i++) {
+  const n = Math.min(base.length, pos.length) / 3;
+  for (let i = 0; i < n; i++) {
     const x = base[i * 3];
     const u = x / L + 0.5;
     const e = Math.max(0, 1 - u);

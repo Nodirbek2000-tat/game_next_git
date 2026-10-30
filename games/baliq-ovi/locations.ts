@@ -21,20 +21,27 @@ export interface TimeOfDayPreset {
   exposure: number;
   /** how many birds sing (0..1) */
   birds: number;
+  /** photo sky (Poly Haven CC0 "puresky" HDRI via tools/blender/sky_jpg.py): /textures/baliq-ovi/osmon_<photo>.jpg + .hdr */
+  photo: string;
+  /** where the sun is in that photo (three.js direction); the sky is turned so it sits where `sun` points */
+  photoSun: V3;
 }
 
 export const TIMES_OF_DAY: Record<TimeOfDay, TimeOfDayPreset> = {
   dawn: {
-    sun: [-0.5, 0.16, -0.85], sunColor: 0xffc79a, sunIntensity: 1.1, hemiSky: 0xb9c8e8, hemiGround: 0x4a5a48, hemiIntensity: 0.62,
+    sun: [-0.5, 0.14, -0.85], sunColor: 0xffc79a, sunIntensity: 1.1, hemiSky: 0xb9c8e8, hemiGround: 0x4a5a48, hemiIntensity: 0.62,
     skyTop: 0x5f7fb8, skyHorizon: 0xf2bfa0, fog: 0xe3c8b8, activity: 1.35, exposure: 1.0, birds: 1,
+    photo: "tong", photoSun: [0.777, 0.138, 0.615],
   },
   day: {
-    sun: [-0.35, 0.5, -0.8], sunColor: 0xfff1d6, sunIntensity: 1.5, hemiSky: 0xcfe8ff, hemiGround: 0x3b5a2a, hemiIntensity: 0.7,
+    sun: [-0.29, 0.68, -0.67], sunColor: 0xfff1d6, sunIntensity: 1.5, hemiSky: 0xcfe8ff, hemiGround: 0x3b5a2a, hemiIntensity: 0.7,
     skyTop: 0x3f86cf, skyHorizon: 0xd4e9f4, fog: 0xd4e9f4, activity: 0.9, exposure: 1.05, birds: 0.5,
+    photo: "kun", photoSun: [0.592, 0.681, 0.43],
   },
   sunset: {
-    sun: [0.45, 0.12, -0.88], sunColor: 0xff9a55, sunIntensity: 1.25, hemiSky: 0xc4a8b8, hemiGround: 0x4a4030, hemiIntensity: 0.55,
+    sun: [0.45, 0.07, -0.89], sunColor: 0xff9a55, sunIntensity: 1.25, hemiSky: 0xc4a8b8, hemiGround: 0x4a4030, hemiIntensity: 0.55,
     skyTop: 0x45558f, skyHorizon: 0xf2985a, fog: 0xe0a888, activity: 1.2, exposure: 1.0, birds: 0.7,
+    photo: "shom", photoSun: [0.763, 0.031, 0.645],
   },
 };
 
@@ -66,7 +73,7 @@ export interface LocationConfig {
 export const LAKE: LocationConfig = {
   id: "tog-koli",
   name: "Tog‘ ko‘li",
-  water: { deep: 0x0d3b4f, shallow: 0x2a8c96, clarity: 4.2 },
+  water: { deep: 0x0a2a36, shallow: 0x2c6e6c, clarity: 4.2 },
   current: { x: 0, z: 0 },
   bigFishBoost: 1,
   speciesWeight: { forel: 1.3, laqqa: 0.8, ilonbosh: 0.8 },
