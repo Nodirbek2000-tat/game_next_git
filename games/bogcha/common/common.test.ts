@@ -3,7 +3,8 @@ import type { EngineApi } from "@/engine";
 import { buildPeople, computeFit } from "@/engine/tracking/people";
 import { KidTracker } from "@/engine/tracking/kids";
 import { makeSkeleton } from "@/engine/testing/skeleton";
-import { drawKids } from "./avatar";
+import { drawKids, lostAlpha, minScaleFor } from "./avatar";
+import { clearEmojiSprites, drawEmoji } from "./sprites";
 import { startKidsGame } from "./kit";
 import { MelodyScheduler, MusicPlayer, NOTE_LEAD, SONGS, type KidsGraph, type SongId } from "./music";
 import { PROMPTS, Voice, findUzbekVoice } from "./voice";
@@ -237,6 +238,112 @@ describe("avatars", () => {
     const n = (ctx as unknown as { n: number }).n;
     expect(n).toBeGreaterThan(50);
     expect(n).toBeLessThan(5 * 90);
+  });
+});
+
+/** a context that records what the avatar code asks for */
+function recCtx(): { ctx: CanvasRenderingContext2D; calls: () => number; arcs: number[]; texts: string[]; alphas: number[] } {
+  const rec = { n: 0, arcs: [] as number[], texts: [] as string[], alphas: [] as number[] };
+  const ctx = new Proxy(
+    {},
+    {
+      get:
+        (_t, k) =>
+        (...a: unknown[]) => {
+          rec.n++;
+          if (k === "arc") rec.arcs.push(a[2] as number);
+          if (k === "fillText") rec.texts.push(String(a[0]));
+        },
+      set: (_t, k, v) => {
+        if (k === "globalAlpha") rec.alphas.push(v as number);
+        return true;
+      },
+    },
+  );
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, calls: () => rec.n, arcs: rec.arcs, texts: rec.texts, alphas: rec.alphas };
+}
+
+describe("avatars never vanish", () => {
+  it("an active child who is not 'present' for a moment is still drawn, slightly faded, at the last position", () => {
+    const tr = trackerWith(2);
+    const both = recCtx();
+    drawKids(both.ctx, tr.slots, 0, 720, 1280);
+    expect(both.alphas).toEqual([]);
+    // the second child is lost for 0.6 s (present false, slot still active)
+    tr.slots[1].present = false;
+    tr.slots[1].lostFor = 0.6;
+    const lost = recCtx();
+    drawKids(lost.ctx, tr.slots, 0, 720, 1280);
+    expect(tr.slots[1].active).toBe(true);
+    expect(lost.calls()).toBeGreaterThanOrEqual(both.calls() - 4); // both children still painted
+    expect(lost.alphas[0]).toBeLessThan(1);
+    expect(lost.alphas[0]).toBeGreaterThan(0.3);
+    expect(lost.alphas[lost.alphas.length - 1]).toBe(1); // alpha restored for the next drawing
+    // a free slot is not drawn
+    const none = recCtx();
+    tr.slots[1].active = false;
+    drawKids(none.ctx, tr.slots, 0, 720, 1280);
+    expect(none.calls()).toBeLessThan(lost.calls());
+    expect(lostAlpha(2)).toBeGreaterThanOrEqual(0.4);
+  });
+
+  it("a child whose head and shoulders are hardly seen (far away) still gets an avatar", () => {
+    const tr = trackerWith(2);
+    for (const p of Object.values(tr.slots[0].pts)) p.v = 0.02;
+    const r = recCtx();
+    drawKids(r.ctx, [tr.slots[0]], 0, 720, 1280);
+    expect(r.calls()).toBeGreaterThan(20);
+  });
+
+  it("a tiny child gets a usable avatar size and a name tag", () => {
+    const tr = trackerWith(1);
+    const k = tr.slots[0];
+    const hx = k.pts.head.x;
+    const hy = k.pts.head.y;
+    for (const p of Object.values(k.pts)) {
+      p.x = hx + (p.x - hx) * 0.12;
+      p.y = hy + (p.y - hy) * 0.12;
+    }
+    k.scale = 8;
+    k.headR = 3;
+    const r = recCtx();
+    drawKids(r.ctx, [k], 0, 720, 1280);
+    // the head circle is not smaller than the minimum avatar head
+    expect(Math.max(...r.arcs)).toBeGreaterThanOrEqual(minScaleFor(720) * 0.6);
+    expect(r.texts).toContain(k.animal.name);
+  });
+
+  it("the greeting: a child who takes a slot gets a popup", () => {
+    const tr = trackerWith(2);
+    const popup = vi.fn();
+    const draws: ((c: CanvasRenderingContext2D, e: EngineApi, n: number) => void)[] = [];
+    const engine = {
+      state: "play",
+      kidSlots: tr.slots,
+      query: new URLSearchParams("duration=30"),
+      stage: { w: 1280, h: 720, dpr: 1 },
+      audio: { graph: () => null },
+      fx: { popup },
+      onDraw: (f: (typeof draws)[number]) => {
+        draws.push(f);
+        return () => {};
+      },
+      finish: () => {},
+    } as unknown as EngineApi;
+    tr.slots[0].joined = true;
+    tr.slots[1].joined = true;
+    startKidsGame(engine, { slug: "test", create: () => ({}) });
+    draws[0](ctxMock(), engine, 100);
+    expect(popup.mock.calls.map((c) => c[0])).toEqual(["🐰 Salom, quyoncha!", "🐻 Salom, ayiqcha!"]);
+  });
+});
+
+describe("emoji sprites", () => {
+  it("fall back to text on a mocked context and never throw", () => {
+    clearEmojiSprites();
+    const r = recCtx();
+    drawEmoji(r.ctx, "🎣", 10, 10, 40);
+    expect(r.texts).toEqual(["🎣"]);
   });
 });
 

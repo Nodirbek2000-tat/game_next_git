@@ -10,8 +10,16 @@
  *                             {type:'frame', id, bitmap, ts, hands:boolean}
  *                             {type:'setHands', on:boolean}  {type:'close'}
  *                             {type:'confidence', det, pres, track}   (lower thresholds when the picture is dark)
+ *                             {type:'prepareTiles', n}   (crowd games: make ready the models for n crops of the picture; crop 0 is the normal pose model)
+ *                             {type:'tiles', id, ts, items:[{tile, bitmap}]}   (one ImageBitmap per crop, already cut from the full-resolution frame)
  * Protocol (worker -> main):  {type:'progress', label, pct}  {type:'ready', delegate:{pose,hand}, bench:{gpu,cpu}|null}  {type:'delegate', pose}
- *                             {type:'result', id, pose, hand, ms}  {type:'error', message}
+ *                             {type:'result', id, pose, hand, ms}  {type:'result', id, tiles:[{tile, pose}], ms}  {type:'error', message}
+ *                             {type:'tilesReady', n}   (n crops can be analysed; 0 = none, e.g. creation failed or the delegate changed)
+ *
+ * Crops: every crop has its OWN landmarker in VIDEO mode. A VIDEO-mode landmarker keeps following the bodies it found (the region of the
+ * previous result is searched first), which keeps two children who stand close together apart once they were seen apart, and it is
+ * cheaper than detecting again. That tracking state is only valid while the model keeps seeing the same part of the picture, so
+ * crops must not share a landmarker (IMAGE mode would be stateless, but would merge neighbours every single frame).
  */
 /* eslint-disable no-restricted-globals */
 
@@ -36,6 +44,10 @@ let CONF = 0.5;
 let POSE_BUF = null;
 let BENCH = null;
 let POSE_WHICH = "lite";
+// landmarkers of the crops 1.. (crop 0 is `pose`)
+let tileLm = [];
+let TILES_WANT = 0;
+let tilesBusy = false;
 
 function post(msg, transfer) {
   self.postMessage(msg, transfer || []);
@@ -170,10 +182,35 @@ async function loadHand() {
   hand = await create(Vision.HandLandmarker, buf, { numHands: 4, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5 }, "hand", delegate.pose);
 }
 
-function plain(res) {
+function plain(res, withWorld) {
   if (!res || !res.landmarks) return null;
   const strip = (arr) => arr.map((l) => l.map((p) => ({ x: p.x, y: p.y, z: p.z, visibility: p.visibility })));
-  return { landmarks: strip(res.landmarks), worldLandmarks: res.worldLandmarks ? strip(res.worldLandmarks) : undefined };
+  return { landmarks: strip(res.landmarks), worldLandmarks: withWorld !== false && res.worldLandmarks ? strip(res.worldLandmarks) : undefined };
+}
+
+function closeTiles() {
+  for (const l of tileLm) { try { if (l) l.close(); } catch (e) { /* ignore */ } }
+  tileLm = [];
+}
+
+/** Models for crops 1..n-1 (on the delegate of the main pose model). Runs in the background: frames keep being analysed meanwhile. */
+async function prepareTiles(n) {
+  n = Math.max(1, Math.min(4, n | 0));
+  TILES_WANT = n;
+  if (tilesBusy) return;
+  tilesBusy = true;
+  try {
+    for (let i = 1; i < TILES_WANT; i++) {
+      if (tileLm[i]) continue;
+      tileLm[i] = await Vision.PoseLandmarker.createFromOptions(fileset, poseOptions(delegate.pose));
+    }
+    post({ type: "tilesReady", n: TILES_WANT >= 2 ? TILES_WANT : 0 });
+  } catch (e) {
+    closeTiles();
+    TILES_WANT = 0;
+    post({ type: "tilesReady", n: 0 });
+  }
+  tilesBusy = false;
 }
 
 self.onmessage = async (e) => {
@@ -195,19 +232,25 @@ self.onmessage = async (e) => {
     } else if (m.type === "delegate") {
       // the GPU delegate turned out slow (the GPU is busy drawing): continue on the CPU
       if (m.to === "CPU" && delegate.pose !== "CPU") {
+        const want = TILES_WANT;
+        closeTiles();
+        post({ type: "tilesReady", n: 0 });
         await loadPose(POSE_WHICH, "CPU");
         post({ type: "delegate", pose: delegate.pose });
+        if (want >= 2) prepareTiles(want);
       }
     } else if (m.type === "poses") {
       const n = Math.max(1, Math.min(6, m.n | 0 || 1));
       if (n !== NUM_POSES) {
         NUM_POSES = n;
         try { if (pose) await pose.setOptions({ numPoses: n }); } catch (err) { /* keep the old value */ }
+        for (const l of tileLm) { try { if (l) await l.setOptions({ numPoses: n }); } catch (err) { /* keep the old value */ } }
       }
     } else if (m.type === "setHands") {
       if (m.on) await loadHand();
     } else if (m.type === "confidence") {
       try { if (pose) await pose.setOptions({ minPoseDetectionConfidence: m.det, minPosePresenceConfidence: m.pres, minTrackingConfidence: m.track }); } catch (err) { /* keep the old thresholds */ }
+      for (const l of tileLm) { try { if (l) await l.setOptions({ minPoseDetectionConfidence: m.det, minPosePresenceConfidence: m.pres, minTrackingConfidence: m.track }); } catch (err) { /* keep the old thresholds */ } }
       try { if (hand) await hand.setOptions({ minHandDetectionConfidence: m.det, minHandPresenceConfidence: m.pres, minTrackingConfidence: m.track }); } catch (err) { /* keep the old thresholds */ }
     } else if (m.type === "frame") {
       const t0 = performance.now();
@@ -215,11 +258,28 @@ self.onmessage = async (e) => {
       lastTs = ts;
       let p = null;
       let h = null;
-      try { p = plain(pose.detectForVideo(m.bitmap, ts)); } catch (err) { /* keep going */ }
+      try { p = plain(pose.detectForVideo(m.bitmap, ts), true); } catch (err) { /* keep going */ }
       if (m.hands && hand) { try { h = plain(hand.detectForVideo(m.bitmap, ts)); } catch (err) { /* keep going */ } }
       try { m.bitmap.close(); } catch (err) { /* ignore */ }
       post({ type: "result", id: m.id, pose: p, hand: h, ms: performance.now() - t0 });
+    } else if (m.type === "prepareTiles") {
+      await prepareTiles(m.n);
+    } else if (m.type === "tiles") {
+      const t0 = performance.now();
+      const out = [];
+      for (const it of m.items) {
+        const lm = it.tile === 0 ? pose : tileLm[it.tile];
+        let p = null;
+        if (lm) {
+          lastTs = Math.max(Math.round(m.ts), lastTs + 1);
+          try { p = plain(lm.detectForVideo(it.bitmap, lastTs), false); } catch (err) { /* keep going */ }
+        }
+        try { it.bitmap.close(); } catch (err) { /* ignore */ }
+        out.push({ tile: it.tile, pose: p });
+      }
+      post({ type: "result", id: m.id, tiles: out, ms: performance.now() - t0 });
     } else if (m.type === "close") {
+      closeTiles();
       try { if (pose) pose.close(); } catch (err) { /* ignore */ }
       try { if (hand) hand.close(); } catch (err) { /* ignore */ }
       self.close();

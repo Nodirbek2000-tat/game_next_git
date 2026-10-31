@@ -12,7 +12,7 @@ test("/bogcha: big cards for the kids games and the teacher line", async ({ page
   await page.goto("/bogcha");
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Bog‘cha");
   await expect(page.getByText("Bolalar kameradan 2–3 metr uzoqroq tursin")).toBeVisible();
-  for (const slug of ["pufakchalar", "qotib-qol", "hayvonlar", "baliqcha"]) {
+  for (const slug of ["pufakchalar", "hayvonlar", "baliqcha"]) {
     await expect(page.getByTestId(`kids-${slug}`)).toHaveAttribute("href", `/play/${slug}`);
   }
   // the demo game is not listed, the main catalogue does not show kids games

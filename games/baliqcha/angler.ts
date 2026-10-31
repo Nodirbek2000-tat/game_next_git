@@ -31,8 +31,8 @@ export const TUNE = {
   /** after a catch the line rests this long (s): the "Ura!" moment */
   cool: 0.9,
   /** help: the line casts itself after this long idle (s) / the fish pulls itself after this long biting (s) */
-  assistIdle: 9,
-  assistBite: 7,
+  assistIdle: 8,
+  assistBite: 5.5,
 } as const;
 
 export interface AnglerInput {

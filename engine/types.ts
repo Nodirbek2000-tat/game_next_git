@@ -31,6 +31,19 @@ export interface HandResultLike {
 export interface DetectionResult {
   pose: PoseResultLike | null;
   hand: HandResultLike | null;
+  /** crop detection (crowd games): the pose result of each analysed crop, landmarks normalised to the crop (see tracking/tiles.ts) */
+  tiles?: TileOutput[];
+  /**
+   * crowd games, after the crops were fused: the first `fresh` bodies of `pose` come from the frame analysed now, the rest are the
+   * latest bodies of the crops that were not analysed this time. Undefined = all bodies are fresh.
+   */
+  fresh?: number;
+}
+
+/** Pose result of one crop (tile) of the camera frame; landmarks are normalised to the crop. */
+export interface TileOutput {
+  tile: number;
+  pose: PoseResultLike | null;
 }
 
 export interface Fit {

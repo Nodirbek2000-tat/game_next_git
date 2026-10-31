@@ -219,6 +219,18 @@ describe("pose matching", () => {
   });
 });
 
+describe("far children", () => {
+  it("a child whose shoulders and wrists are seen at only 0.18 (far away) still matches the pose", () => {
+    const k = kidAt(176, 176, { handsUp: false });
+    for (const p of [k.pts.ls, k.pts.rs, k.pts.lw, k.pts.rw]) p.v = 0.18;
+    expect(poseMatches("handsUp", k)).toBe(true);
+    expect(poseMatches("handsUp", DOWN())).toBe(false);
+    const out = kidAt(90, 90, { armsOut: false });
+    for (const p of [out.pts.ls, out.pts.rs, out.pts.lw, out.pts.rw]) p.v = 0.18;
+    expect(poseMatches("armsOut", out)).toBe(true);
+  });
+});
+
 describe("HoldGate", () => {
   it("needs ~0.3 s of holding, forgives single noisy frames, freezes while the child is out of view", () => {
     const g = new HoldGate();

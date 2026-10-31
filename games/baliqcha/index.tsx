@@ -19,7 +19,8 @@ const base = defineKidsGame({
   slug: "baliqcha",
   maxKids: 5,
   roundSec: 90,
-  music: null, // the game starts its own, a little slower, tune
+  music: "bouncy",
+  song: "/audio/bogcha/baliqcha.mp3",
   dim: 0.45,
   create(kit) {
     const sfx = new FishSfx(() => kit.engine.audio.graph?.() ?? null);
@@ -33,7 +34,12 @@ const base = defineKidsGame({
     let pullHinted = false;
     let started = false;
     const game = new Baliqcha(kit.kids, {
-      cast: () => sfx.cast(),
+      cast: (slot) => {
+        sfx.cast();
+        // a cheerful word over the child who threw the line (in their colour)
+        const k = kit.kids[slot];
+        kit.engine.fx.popup("Hop!", k.pts.head.x, Math.max(kit.stage.h * 0.2, k.pts.head.y - k.headR * 2.8), k.color, 44, 0.8);
+      },
       land: () => sfx.splash(),
       bite: () => {
         sfx.bite();
@@ -52,6 +58,9 @@ const base = defineKidsGame({
         else sfx.hooray();
         kit.engine.fx.popup(golden ? "Ura! 🌟" : "Ura!", bx, by - h * 0.15, golden ? "#ffe066" : "#fff3b0", golden ? 76 : 60, 1.1);
         kit.award(kit.kids[slot], stars, bx + w * 0.07, by - h * 0.24);
+        // and one for the child who caught it
+        const k = kit.kids[slot];
+        kit.engine.fx.popup("Ajoyib!", k.pts.head.x, Math.max(h * 0.2, k.pts.head.y - k.headR * 2.8), k.color, 48, 1);
       },
     });
     const painter = new Painter(game);
@@ -80,7 +89,7 @@ const base = defineKidsGame({
 
     return {
       onStart() {
-        kit.music.play("bouncy", 0.9);
+        if (!kit.hasSong) kit.music.play("bouncy", 0.9);
         if (voiceUi.on) startVoice();
         if (!started) {
           started = true;

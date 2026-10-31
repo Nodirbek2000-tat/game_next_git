@@ -1,5 +1,6 @@
 import type { Env } from "./env";
 import type { CameraProblem } from "./guides";
+import { CROWD_CFG } from "../tracking/crowdConfig";
 
 export class CameraError extends Error {
   constructor(
@@ -45,22 +46,42 @@ export const CAMERA_IDEAL = { width: { ideal: 640 }, height: { ideal: 360 }, fra
 /** Phones / tablets: an even smaller picture (less decoding, less copying, cooler device); the models look at 256 px anyway. */
 export const CAMERA_IDEAL_MOBILE = { width: { ideal: 480 }, height: { ideal: 270 }, frameRate: { ideal: 30, max: 30 } } as const;
 
+/**
+ * Crowd (Bog‘cha) games: children stand 3-4 m away in a room, so the picture gets more pixels: 720p. The tiled detection cuts crops out
+ * of it (see tracking/tiles.ts). `ideal` lets the browser pick the nearest mode the camera has; a camera with only 640x360 still works.
+ */
+export const CAMERA_IDEAL_CROWD = {
+  width: { ideal: CROWD_CFG.camera.width },
+  height: { ideal: CROWD_CFG.camera.height },
+  frameRate: { ideal: CROWD_CFG.camera.fps, max: CROWD_CFG.camera.fps },
+} as const;
+export const CAMERA_IDEAL_CROWD_MOBILE = {
+  width: { ideal: CROWD_CFG.camera.mobileWidth },
+  height: { ideal: CROWD_CFG.camera.mobileHeight },
+  frameRate: { ideal: 30, max: 30 },
+} as const;
+
 function isPhone(): boolean {
   return typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent);
 }
 
 /**
  * Ask for the camera right away (the browser prompt appears instantly). Tries the saved device first,
- * then the front camera at 640x360@30, then anything.
+ * then the front camera at 640x360@30, then anything. Crowd games ask for 1280x720@30 first (960x540 on phones) and fall back to that.
  */
-export async function openCamera(savedDeviceId?: string): Promise<OpenedCamera> {
+export async function openCamera(savedDeviceId?: string, opts?: { crowd?: boolean }): Promise<OpenedCamera> {
   if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
     throw Object.assign(new Error("noapi"), { name: "NoAPI" });
   }
-  const ideal = isPhone() ? CAMERA_IDEAL_MOBILE : CAMERA_IDEAL;
+  const phone = isPhone();
+  const crowd = opts?.crowd === true;
+  const ideal = crowd ? (phone ? CAMERA_IDEAL_CROWD_MOBILE : CAMERA_IDEAL_CROWD) : phone ? CAMERA_IDEAL_MOBILE : CAMERA_IDEAL;
   const tries: (MediaTrackConstraints | boolean)[] = [];
   if (savedDeviceId) tries.push({ deviceId: { exact: savedDeviceId }, ...ideal });
-  tries.push({ ...ideal, facingMode: "user" }, true);
+  tries.push({ ...ideal, facingMode: "user" });
+  // crowd: a camera that refuses the big picture still gets the normal small one before "anything"
+  if (crowd) tries.push({ ...(phone ? CAMERA_IDEAL_MOBILE : CAMERA_IDEAL), facingMode: "user" });
+  tries.push(true);
   let last: unknown;
   for (const v of tries) {
     try {

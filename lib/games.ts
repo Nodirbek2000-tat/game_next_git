@@ -194,22 +194,6 @@ export const ALL_GAMES: GameInfo[] = [
     color: "#39c5ff",
   },
   {
-    slug: "qotib-qol",
-    title: "Qotib qol!",
-    icon: "🎵",
-    short: "Musiqa chalinsa — raqsga, to‘xtasa — qotib qoling!",
-    description: "Musiqa chalinganda bolalar raqsga tushadi. Musiqa to‘xtaganda hamma qotib qoladi. Qimirlamaganlarga yulduz beriladi.",
-    tip: "Musiqa to‘xtasa — qimirlamang",
-    rules: ["Musiqa chalinsa — raqsga tushing.", "Musiqa to‘xtasa — qotib qoling.", "Qotib qolgan bola yulduz oladi."],
-    bodyParts: ["butun-tana"],
-    difficulty: "oson",
-    kidsFriendly: true,
-    audience: "bogcha",
-    twoPlayers: false,
-    stars: [15, 35, 60],
-    color: "#ff7ad9",
-  },
-  {
     slug: "hayvonlar",
     title: "Hayvonlar",
     icon: "🐸",
@@ -258,22 +242,6 @@ export const ALL_GAMES: GameInfo[] = [
     color: "#e0703a",
   },
   {
-    slug: "havoda-rasm",
-    title: "Havoda rasm",
-    icon: "🎨",
-    short: "Qo‘llaringiz bilan havoda rasm chizing!",
-    description: "Har bir bolaning qo‘llari o‘z rangida iz qoldiradi va hammasi bitta umumiy rasmga aylanadi. Ora-sira «Quyosh chizamiz!» deb so‘raladi — shaklga yaqin chizsangiz, yulduz va chaqnoqlar paydo bo‘ladi. Qarsak chalsangiz — salyut!",
-    tip: "Qo‘lni ko‘tarib havoda chizing",
-    rules: ["Qo‘lni ko‘tarsangiz — rangli iz qoladi.", "Quyosh, yomg‘ir, to‘lqin — birga chizamiz.", "Qarsak chalsangiz salyut otiladi. Oxirida umumiy rasm chiqadi!"],
-    bodyParts: ["qollar"],
-    difficulty: "oson",
-    kidsFriendly: true,
-    audience: "bogcha",
-    twoPlayers: false,
-    stars: [10, 22, 40],
-    color: "#ff7ad9",
-  },
-  {
     slug: "sanaymiz",
     title: "Sanaymiz",
     icon: "🔢",
@@ -310,7 +278,7 @@ export const ALL_GAMES: GameInfo[] = [
 ];
 
 /** Games released on the site right now; the rest come back in a later stage. */
-export const ACTIVE_SLUGS = ["meva-ninja", "baliq-ovi", "mashina", "poyga", "pufakchalar", "qotib-qol", "hayvonlar", "baliqcha", "devor-bolalar", "havoda-rasm", "sanaymiz", "bogcha-demo"] as const;
+export const ACTIVE_SLUGS = ["meva-ninja", "baliq-ovi", "mashina", "poyga", "pufakchalar", "hayvonlar", "baliqcha", "devor-bolalar", "sanaymiz", "bogcha-demo"] as const;
 
 export const GAMES: GameInfo[] = ALL_GAMES.filter((g) => (ACTIVE_SLUGS as readonly string[]).includes(g.slug));
 

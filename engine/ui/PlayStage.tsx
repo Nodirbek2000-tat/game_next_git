@@ -559,6 +559,11 @@ function DebugPanel(): ReactElement | null {
       <div>
         <b>aniqlash</b> ≤{d.detectCap}/s · <b>kamera</b> {d.camera} · <b>yorug‘lik</b> {d.light}
       </div>
+      {d.crowd ? (
+        <div data-testid="debug-crowd">
+          <b>bolalar</b> {d.crowd}
+        </div>
+      ) : null}
       <div>
         <b>qulflangan</b> {d.locked}
       </div>

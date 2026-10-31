@@ -181,6 +181,13 @@ Smoothness beats looks. The rules the engine follows (measured with `e2e/perf`, 
   get picked. Changed at runtime with `Detector.setPoses`.
 * **Detection rate** is capped at 30/s (ladder 30-24-20-15-12-10; phones start at 20/15), the model gets <= 480 px (ladder down to 320), the low-light
   brightening works on <= 320 px.
+* **Crowd games (Bog‘cha) only** — all numbers in `tracking/crowdConfig.ts`: the camera asks for 1280x720 (960x540 on phones); the pose model is run
+  on overlapping left / right square crops of the full-resolution frame, one crop per call in turn (`tracking/tiles.ts`, `tracking/crowdVision.ts`; one
+  VIDEO-mode landmarker per crop inside the worker, crop 0 is the normal pose model). Results are mapped back to the frame, duplicates from the
+  overlap are merged, a body is taken only from the crop that owns its zone. When the model cannot keep a child refreshed every ~150 ms the controller
+  goes 3 -> 2 crops -> the old whole-frame path (and climbs back after a long calm spell). The kid tracker extrapolates along a fading velocity and
+  holds a child through short misses. `?tiles=0` = old path, `?tiles=2|3` = force that many crops (no stepping down), `?debug=1` shows the crowd line.
+  Off by default on phones and on the main-thread back-end.
 * **Quality**: phones, integrated GPUs and weak CPUs start low / medium; pixel ratio 1 on low and medium (1.5 on high), no shadows below high, antialias
   only on high; the controller reacts after ~1 s. Phones render at 30 fps (the 3D canvas and the 2D layer skip every other frame, `runtime.drawNow`).
 * **No CSS blur / filter over the camera**: `.hk-glass` has no backdrop-filter, the camera is dimmed with a black veil (`.hk-camdim`), not a CSS filter.

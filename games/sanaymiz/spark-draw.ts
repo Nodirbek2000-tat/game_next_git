@@ -1,6 +1,6 @@
 // Draws the pooled sparkles as little 4-point crosses (two fillRects each, no paths, no gradients). Shared by havoda-rasm and sanaymiz.
 
-import { MAX_SPARKS, type Sparks } from "./logic";
+import { MAX_SPARKS, type Sparks } from "./sparks";
 
 export function drawSparks(ctx: CanvasRenderingContext2D, sp: Sparks, palette: readonly string[], now: number): void {
   if (sp.count === 0) return;

@@ -1,6 +1,7 @@
 // Public surface of the Bog‘cha kit: `import { defineKidsGame, ... } from "@/games/bogcha/common"`.
 export { defineKidsGame, startKidsGame, type KidsGameDef, type KidsGameInstance, type KidsKit, type KidsRun } from "./kit";
-export { drawKid, drawKids } from "./avatar";
+export { drawKid, drawKids, lostAlpha, minScaleFor } from "./avatar";
+export { clearEmojiSprites, drawEmoji } from "./sprites";
 export { KidsHud, pillPath, starPath } from "./hud";
 export { KidSfx, MelodyScheduler, MusicPlayer, SONGS, midiHz, playNote, type Song, type SongId } from "./music";
 export { PROMPTS, Voice, findUzbekVoice, type Prompt, type PromptId } from "./voice";

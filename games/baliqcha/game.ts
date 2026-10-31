@@ -7,7 +7,12 @@ import { Angler, EV, ST, TUNE, type AnglerInput } from "./angler";
 import { BASKET, FM, GOLDEN, Pond } from "./pond";
 import { GroupVoice } from "./voiceGroup";
 
-const MIN_VIS = 0.25;
+/** shoulders / head are trusted from this visibility on */
+const MIN_VIS = 0.15;
+/** a hand is trusted from here: a far child's wrists are seen poorly but still move clearly */
+const HAND_VIS = 0.1;
+/** floats of two children are at least this far apart (fraction of the stage width) */
+export const FLOAT_GAP = 0.1;
 
 /** where the float of each slot lands (fraction of the stage height): staggered so floats of neighbours do not overlap */
 export const FLOAT_LANE: readonly number[] = [0.58, 0.7, 0.6, 0.72, 0.64];
@@ -31,25 +36,26 @@ export interface Sink {
  */
 export function handHeight(k: KidSlot): number {
   const p = k.pts;
-  const scale = Math.max(8, k.scale);
+  // a tiny shoulder width would blow up every noise pixel: never below 12 px
+  const scale = Math.max(12, k.scale);
   let sy: number;
   if (p.ls.v >= MIN_VIS && p.rs.v >= MIN_VIS) sy = (p.ls.y + p.rs.y) / 2;
   else if (p.ls.v >= MIN_VIS) sy = p.ls.y;
   else if (p.rs.v >= MIN_VIS) sy = p.rs.y;
   else sy = p.head.y + k.headR * 2;
   let best = -9;
-  if (p.lw.v >= MIN_VIS) best = (sy - p.lw.y) / scale;
-  if (p.rw.v >= MIN_VIS) {
+  if (p.lw.v >= HAND_VIS) best = (sy - p.lw.y) / scale;
+  if (p.rw.v >= HAND_VIS) {
     const u = (sy - p.rw.y) / scale;
     if (u > best) best = u;
   }
   if (best < TUNE.upOn) {
     // the wrist is hidden / left the picture: a raised elbow still means "hand up"
-    if (p.le.v >= MIN_VIS) {
+    if (p.le.v >= HAND_VIS) {
       const u = ((sy - p.le.y) / scale) * 1.8;
       if (u > best && u > 0.3) best = u;
     }
-    if (p.re.v >= MIN_VIS) {
+    if (p.re.v >= HAND_VIS) {
       const u = ((sy - p.re.y) / scale) * 1.8;
       if (u > best && u > 0.3) best = u;
     }
@@ -139,10 +145,43 @@ export class Baliqcha {
     for (let i = 0; i < N_SPLASH; i++) if (this.spT[i] < 5) this.spT[i] += dt;
   }
 
+  /** Free of every other busy float by at least FLOAT_GAP? */
+  private floatFree(i: number, x: number): boolean {
+    for (let j = 0; j < MAX_KIDS; j++) {
+      if (j === i || this.anglers[j].state === ST.idle) continue;
+      if (Math.abs(x - this.floatX[j]) < FLOAT_GAP - 1e-4) return false;
+    }
+    return true;
+  }
+
+  /** x (fraction) for the float of slot `i`: in front of the child, but never on top of another child's float */
+  private floatSpot(i: number, x: number): number {
+    const lo = 0.08;
+    const hi = 0.92;
+    const want = Math.min(hi, Math.max(lo, x));
+    if (this.floatFree(i, want)) return want;
+    // otherwise the nearest free place right next to one of the busy floats
+    let best = want;
+    let bestD = Infinity;
+    for (let j = 0; j < MAX_KIDS; j++) {
+      if (j === i || this.anglers[j].state === ST.idle) continue;
+      for (let side = -1; side <= 1; side += 2) {
+        const c = this.floatX[j] + side * FLOAT_GAP;
+        if (c < lo || c > hi || !this.floatFree(i, c)) continue;
+        const d = Math.abs(c - want);
+        if (d < bestD) {
+          bestD = d;
+          best = c;
+        }
+      }
+    }
+    return best;
+  }
+
   private onEvents(i: number, ev: number, ang: Angler, stageW: number, k: KidSlot): void {
     const pond = this.pond;
     if (ev & EV.cast) {
-      this.floatX[i] = Math.min(0.9, Math.max(0.1, k.center.x / Math.max(1, stageW)));
+      this.floatX[i] = this.floatSpot(i, k.center.x / Math.max(1, stageW));
       this.floatY[i] = FLOAT_LANE[i] ?? 0.62;
       this.sink.cast?.(i);
     }

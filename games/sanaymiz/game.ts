@@ -2,11 +2,11 @@
 // are counted on their own avatar: pop + the number), and "Qizil sharni ushlang!" (balloons float up, touch the named colour).
 // Every child who completes a round gets a star, nobody loses. 2D only, pooled, no allocation per frame.
 
-import { KID_COLORS, pillPath, starPath, type KidsGameInstance, type KidsKit } from "../bogcha/common";
+import { KID_COLORS, drawEmoji, minScaleFor, pillPath, starPath, type KidsGameInstance, type KidsKit } from "../bogcha/common";
 import type { KidsGraph } from "../bogcha/common/music";
-import { Speaker } from "../havoda-rasm/say";
-import { Sparks } from "../havoda-rasm/logic";
-import { drawSparks } from "../havoda-rasm/spark-draw";
+import { Speaker } from "./say";
+import { Sparks } from "./sparks";
+import { drawSparks } from "./spark-draw";
 import {
   Balloons,
   COLOURS,
@@ -32,7 +32,8 @@ import { CountSounds } from "./sound";
 const TAU = Math.PI * 2;
 const GOLD = 9;
 const DIGITS = ["0", "1", "2", "3", "4", "5"] as const;
-const EMOJI_FONT = '"Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
+/** a wrist touches from this visibility on (far children are seen poorly, but their hands move clearly) */
+const HAND_VIS = 0.12;
 
 export interface SanaymizDebug {
   idx: number;
@@ -63,6 +64,8 @@ export class SanaymizGame implements KidsGameInstance {
   private readonly sounds: CountSounds;
   private readonly palette: string[] = [...COLOURS.map((c) => c.hex), ...KID_COLORS, "#ffd23d"];
   private readonly present = new Uint8Array(SLOTS);
+  /** children with a slot (also during a short loss): their marks stay on screen */
+  private readonly shown = new Uint8Array(SLOTS);
   private readonly colourDone = new Uint8Array(SLOTS);
   private readonly popT = new Float32Array(SLOTS);
   private readonly popN = new Uint8Array(SLOTS);
@@ -78,7 +81,6 @@ export class SanaymizGame implements KidsGameInstance {
   private pops = 0;
   private lastH = 0;
   private fDigit = "";
-  private fEmoji = "";
   private fName = "";
   private fKid = "";
   private readonly dbg: SanaymizDebug | null;
@@ -140,6 +142,7 @@ export class SanaymizGame implements KidsGameInstance {
       const k = kit.kids[s];
       const p = k.active && k.present;
       this.present[s] = p ? 1 : 0;
+      this.shown[s] = k.active ? 1 : 0;
       if (p) env.kidX[n++] = k.center.x;
     }
     env.nKids = n;
@@ -239,7 +242,7 @@ export class SanaymizGame implements KidsGameInstance {
       for (let side = 0; side < 2; side++) {
         const wi = s * 2 + side;
         const pt = side ? k.pts.rw : k.pts.lw;
-        if (!this.present[s] || pt.v < 0.25) {
+        if (!this.present[s] || pt.v < HAND_VIS) {
           this.prevOk[wi] = 0;
           continue;
         }
@@ -253,7 +256,7 @@ export class SanaymizGame implements KidsGameInstance {
         this.prevY[wi] = pt.y;
         this.prevOk[wi] = 1;
         if (!playing) continue;
-        const reach = b.r * 1.15 + Math.max(k.scale * 0.2, h * 0.02);
+        const reach = b.r * 1.15 + Math.max(k.scale * 0.3, h * 0.035);
         for (let i = 0; i < MAX_BALLOONS; i++) {
           if (!b.alive[i]) continue;
           if (!segCircle(x0, y0, pt.x, pt.y, b.x[i], b.y[i], reach)) continue;
@@ -282,7 +285,6 @@ export class SanaymizGame implements KidsGameInstance {
   private layout(h: number): void {
     this.lastH = h;
     this.fDigit = `800 ${Math.round(h * 0.15)}px system-ui, "Segoe UI", sans-serif`;
-    this.fEmoji = `${Math.round(h * 0.07)}px ${EMOJI_FONT}`;
     this.fName = `800 ${Math.round(h * 0.075)}px system-ui, "Segoe UI", sans-serif`;
     this.fKid = `800 ${Math.round(h * 0.1)}px system-ui, "Segoe UI", sans-serif`;
   }
@@ -363,12 +365,13 @@ export class SanaymizGame implements KidsGameInstance {
     const dr = h * 0.011;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
+    const minHead = minScaleFor(h) * 0.42;
     for (let s = 0; s < SLOTS; s++) {
-      if (!this.present[s]) continue;
+      if (!this.shown[s]) continue;
       const k = kit.kids[s];
       const cx = k.pts.head.x;
       // kept inside the screen (a child close to the top edge still sees the dots)
-      const cy = Math.max(h * 0.1, k.pts.head.y - k.headR * 2.3);
+      const cy = Math.max(h * 0.1, k.pts.head.y - Math.max(k.headR, minHead) * 2.3);
       const done = isCount ? this.count.done[s] === 1 : this.colourDone[s] === 1;
       if (done) {
         starPath(ctx, cx, cy, h * 0.036);
@@ -432,13 +435,11 @@ export class SanaymizGame implements KidsGameInstance {
     ctx.font = this.fDigit;
     ctx.fillStyle = "#3a2a6b";
     ctx.fillText(DIGITS[r.n], x + ch * 0.6, y + ch * 0.54);
-    ctx.font = this.fEmoji;
-    ctx.fillStyle = "#000";
     const icon = r.kind === "jump" ? "🐰" : "👏";
     const best = this.count.best();
     for (let i = 0; i < r.n; i++) {
       ctx.globalAlpha = i < best ? 1 : 0.35;
-      ctx.fillText(icon, x + ch * 1.2 + gap * 0.5 + i * gap, y + ch * 0.54);
+      drawEmoji(ctx, icon, x + ch * 1.2 + gap * 0.5 + i * gap, y + ch * 0.54, h * 0.075);
     }
     ctx.globalAlpha = 1;
   }

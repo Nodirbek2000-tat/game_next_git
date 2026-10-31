@@ -6,7 +6,7 @@ import { makeSkeleton, type SkeletonOpts } from "@/engine/testing/skeleton";
 import { PROMPTS, startKidsGame } from "../bogcha/common";
 import { ANIMALS, ANIMAL_IDS, registerPrompts, type AnimalDef, type Move } from "./animals";
 import { hayvonlarDef } from "./game";
-import { KidProgress, MOVE_CFG, type MoveSignals } from "./moves";
+import { KidProgress, MOVE_CFG, softHands, type MoveSignals, type SoftHands } from "./moves";
 import { MOVE_PERIOD, motionAt, newMotion } from "./motion";
 import { Painter } from "./paint";
 import { Round, ROUND_CFG, type KidLike, type RoundHooks } from "./round";
@@ -30,6 +30,33 @@ function run(p: KidProgress, move: Move, frames: number, s: MoveSignals | ((i: n
   for (let i = 0; i < frames; i++) if (p.step(move, typeof s === "function" ? s(i) : s, 1 / 30)) fired = true;
   return fired;
 }
+
+describe("far children", () => {
+  const pt = (x: number, y: number, v: number) => ({ x, y, v });
+  const farPts = (wristV: number, wristY: number) =>
+    ({
+      head: pt(300, 200, 0.5),
+      lw: pt(270, wristY, wristV),
+      rw: pt(330, wristY, wristV),
+    }) as unknown as Parameters<typeof softHands>[0];
+
+  it("hands up is also seen on poorly visible wrists (the kit's own handsUp needs well seen ones)", () => {
+    const out: SoftHands = { L: false, R: false };
+    expect(softHands(farPts(0.12, 140), 40, out)).toEqual({ L: true, R: true });
+    expect(softHands(farPts(0.12, 260), 40, out)).toEqual({ L: false, R: false }); // hands down
+    expect(softHands(farPts(0.05, 140), 40, out)).toEqual({ L: false, R: false }); // not seen at all: nothing claimed
+  });
+
+  it("a far bear child (kit signals false) still completes 'hands up' with the soft hands", () => {
+    const p = new KidProgress();
+    const soft: SoftHands = { L: true, R: true };
+    let done = false;
+    for (let i = 0; i < 30 && !done; i++) done = p.step("handsUp", sig(), 1 / 30, soft);
+    expect(done).toBe(true);
+    const q = new KidProgress();
+    expect(run(q, "handsUp", 60, sig())).toBe(false); // without them nothing happens
+  });
+});
 
 describe("animals", () => {
   it("six animals, one move each, Uzbek Latin prompts", () => {
@@ -297,6 +324,21 @@ describe("challenge sequencing", () => {
   });
 });
 
+describe("prompt timing", () => {
+  it("the round waits for hooks.promptAt before it says the prompt", () => {
+    const a = director("quyon", { promptAt: () => 3 });
+    a.round.begin();
+    tick(a.round, 2.9, []);
+    expect(a.log.filter((l) => l.startsWith("prompt"))).toEqual([]);
+    tick(a.round, 0.3, []);
+    expect(a.log.filter((l) => l.startsWith("prompt"))).toEqual(["prompt:quyon"]);
+    const b = director("qush", { promptAt: () => Number.POSITIVE_INFINITY });
+    b.round.begin();
+    tick(b.round, 5, []);
+    expect(b.log.some((l) => l.startsWith("prompt"))).toBe(false);
+  });
+});
+
 describe("demonstration motion", () => {
   it("is finite, bounded and loops for every move", () => {
     const m = newMotion();
@@ -311,6 +353,8 @@ describe("demonstration motion", () => {
         expect(m.crouch).toBeLessThanOrEqual(1);
         expect(m.sx).toBeGreaterThan(0.6);
         expect(m.sy).toBeGreaterThan(0.6);
+        expect(Number.isFinite(m.ear)).toBe(true);
+        expect(Math.abs(m.ear)).toBeLessThanOrEqual(0.5);
       }
       const a = { ...motionAt(mv, 0.3, newMotion()) };
       const b = { ...motionAt(mv, 0.3 + MOVE_PERIOD[mv] * 3, newMotion()) };
@@ -398,7 +442,7 @@ describe("hayvonlar on the kids kit", () => {
     g.run.dispose();
   });
 
-  it("paints without throwing for every animal and a bounded number of canvas calls", () => {
+  it("paints without throwing for every animal and a bounded number of canvas calls (uncached paths)", () => {
     const g = setup("duration=60");
     const painter = new Painter(false);
     expect(painter).toBeTruthy();
@@ -409,7 +453,7 @@ describe("hayvonlar on the kids kit", () => {
       fakeRound.animal = a;
       const before = (ctx as unknown as { n: number }).n;
       painter.draw(ctx, W, H, 1234, fakeRound as unknown as Round, g.tr.slots);
-      expect((ctx as unknown as { n: number }).n - before).toBeLessThan(120);
+      expect((ctx as unknown as { n: number }).n - before).toBeLessThan(500);
     }
     g.run.dispose();
   });

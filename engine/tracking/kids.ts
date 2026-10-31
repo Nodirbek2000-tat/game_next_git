@@ -1,15 +1,25 @@
 import { OneEuro } from "./oneEuro";
-import { leadMs, predict, velAlpha } from "./prediction";
+import { velAlpha } from "./prediction";
+import { CROWD_CFG } from "./crowdConfig";
 import type { Person } from "../types";
 
 // "Bog‘cha" (kindergarten) crowd tracking: every detected person (2..5 children) is exposed as a stable "kid slot".
 // No player lock, no scan: slots are assigned by left-to-right position and then kept by position continuity.
 // Per kid: key points in stage px (filtered + lightly predicted) and simple signals (handsUp, jump, squat, clap, wave,
 // stillness, armsOut) tuned for small, quickly moving bodies. Nothing is allocated after construction.
+//
+// Detections of a crowd game arrive unevenly (crops of the picture are analysed round-robin, so a child is refreshed every ~70-300 ms):
+//  - the drawn points chase a target that coasts along a velocity that fades out (CROWD_CFG.motion): nothing freezes, nothing jumps,
+//  - a child stays "present" (and keeps the slot) through short misses (CROWD_CFG.hold),
+//  - a new child must be seen twice before it takes a slot, and never takes the slot of a child who was seen a moment ago,
+//  - matching uses predicted positions and sizes and prefers slots that were seen recently (CROWD_CFG.match).
 
 export const MAX_KIDS = 5;
-/** a slot of a child who is gone is freed after this many seconds */
-export const FREE_AFTER_SEC = 2;
+/** a slot of a child who is gone is freed after this many seconds (at least; see CROWD_CFG.hold) */
+export const FREE_AFTER_SEC = CROWD_CFG.hold.freeSec;
+/** candidates looked at per detection: duplicates and false detections must not push real children out */
+const CAND_MAX = MAX_KIDS * 2;
+const PEND_MAX = 8;
 
 export interface KidAnimal {
   id: "quyon" | "ayiq" | "mushuk" | "kuchuk" | "baqa";
@@ -90,8 +100,10 @@ export interface KidSlot {
   animal: KidAnimal;
   /** this slot belongs to a child (also during the 2 s grace period after the child left) */
   active: boolean;
-  /** seen in the last 0.35 s */
+  /** seen recently (CROWD_CFG.hold.presentSec, longer when a detection round is long): through a short miss the child stays present at the held position */
   present: boolean;
+  /** present, but not seen for the last moment: the points are extrapolated / held, not measured (undefined = false) */
+  held?: boolean;
   /** seconds since the child was last seen */
   lostFor: number;
   /** seconds since the slot was taken */
@@ -114,12 +126,7 @@ export const KIDS_CFG = {
   /** a detection is a child only when shoulders (mean) or the nose are seen this well */
   personVis: 0.2,
   filter: { minCutoff: 1.4, beta: 8, dCutoff: 4 },
-  /** render-rate extrapolation: lighter than the adult engine (children move in all directions, jitter shows on avatars) */
-  extrapolation: { maxMs: 100, gain: 0.7, leadMs: 8 },
-  /** position continuity: max distance in body scales (plus growth while the child is away) */
-  matchScales: 2.6,
-  matchGrowPerSec: 2.0,
-  matchMaxFrac: 0.5,
+  // motion between detections, holding, joining and slot matching: CROWD_CFG (crowdConfig.ts)
   jump: { enter: 0.22, exit: 0.1, cooldownMs: 350, fastRise: 1.2, freezeMs: 800 },
   squat: { enter: 0.28, exit: 0.14 },
   baseline: { upTauMs: 1500, downTauMs: 4000 },
@@ -148,6 +155,7 @@ function mkSlot(i: number): KidSlot {
     animal: KID_ANIMALS[i] ?? KID_ANIMALS[0],
     active: false,
     present: false,
+    held: false,
     lostFor: 0,
     seenFor: 0,
     joined: false,
@@ -192,6 +200,14 @@ class Internal {
   fy: OneEuro[];
   filt = new Float32Array(N_KP * 2);
   vel = new Float32Array(N_KP * 2);
+  /** drawn position of every point (chases the extrapolated target) */
+  rx = new Float32Array(N_KP * 2);
+  rInit = false;
+  lastRender = 0;
+  /** smoothed time between two detections of this child, s */
+  dtEma = 0.1;
+  /** time between detections that sets the chase speed: the gap that just ended, relaxing back to `dtEma` (a catch-up after a hole is gentle) */
+  chaseDt = 0.1;
   tDet = 0;
   hasDet = false;
   joinedAt = 0;
@@ -231,6 +247,11 @@ class Internal {
     for (const o of this.fy) o.reset();
     this.filt.fill(0);
     this.vel.fill(0);
+    this.rx.fill(0);
+    this.rInit = false;
+    this.lastRender = 0;
+    this.dtEma = 0.1;
+    this.chaseDt = 0.1;
     this.hasDet = false;
     this.vcx = this.vcy = 0;
     this.hasBase = false;
@@ -260,21 +281,78 @@ const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
  */
 export class KidTracker {
   readonly slots: KidSlot[] = Array.from({ length: MAX_KIDS }, (_, i) => mkSlot(i));
-  /** children seen right now */
+  /** children seen right now (present: includes the ones that are held through a short miss) */
   count = 0;
   private ints: Internal[] = this.slots.map((s) => new Internal(s));
-  private cand: (Person | null)[] = new Array<Person | null>(MAX_KIDS).fill(null);
-  private candUsed = new Uint8Array(MAX_KIDS);
+  private cand: (Person | null)[] = new Array<Person | null>(CAND_MAX).fill(null);
+  private candUsed = new Uint8Array(CAND_MAX);
   private slotTaken = new Uint8Array(MAX_KIDS);
-  private order = new Uint8Array(MAX_KIDS);
+  private order = new Uint8Array(CAND_MAX);
+  private pend = Array.from({ length: PEND_MAX }, () => ({ on: false, x: 0, y: 0, n: 0, t: 0 }));
   private nc = 0;
   private W = 1280;
   /** how many slots may be used (meta.maxKids) */
   maxKids: number = MAX_KIDS;
+  /**
+   * Time (ms) one child needs to be refreshed (a full round over all crops of the picture; 0 = unknown / every detection).
+   * The runtime sets it; the hold times grow with it so a child on a slow round does not flicker.
+   */
+  cycleMs = 0;
 
   reset(): void {
     for (let i = 0; i < MAX_KIDS; i++) this.free(i, false);
+    for (const p of this.pend) p.on = false;
     this.count = 0;
+  }
+
+  /** seconds a child stays "present" after the last detection */
+  private holdSec(): number {
+    const H = CROWD_CFG.hold;
+    return Math.min(2, Math.max(H.presentSec, (this.cycleMs / 1000) * H.cycleFactor));
+  }
+
+  private freeSec(hold: number): number {
+    return Math.max(CROWD_CFG.hold.freeSec, hold + 1.2);
+  }
+
+  /** A person who is not matched to a slot becomes a child only after `join.confirm` detections at about the same place. */
+  private confirmed(p: Person, now: number): boolean {
+    const J = CROWD_CFG.join;
+    if (J.confirm <= 1) return true;
+    const lim = Math.max(60, p.scale * 1.5);
+    let free = -1;
+    let oldest = 0;
+    let oldestT = Infinity;
+    for (let j = 0; j < PEND_MAX; j++) {
+      const e = this.pend[j];
+      if (e.on && now - e.t > J.withinMs) e.on = false;
+      if (!e.on) {
+        if (free < 0) free = j;
+        continue;
+      }
+      if (Math.hypot(e.x - p.center.x, e.y - p.center.y) < lim) {
+        e.n++;
+        e.x = p.center.x;
+        e.y = p.center.y;
+        e.t = now;
+        if (e.n >= J.confirm) {
+          e.on = false;
+          return true;
+        }
+        return false;
+      }
+      if (e.t < oldestT) {
+        oldestT = e.t;
+        oldest = j;
+      }
+    }
+    const e = this.pend[free >= 0 ? free : oldest];
+    e.on = true;
+    e.x = p.center.x;
+    e.y = p.center.y;
+    e.n = 1;
+    e.t = now;
+    return false;
   }
 
   private isKid(p: Person): boolean {
@@ -289,13 +367,17 @@ export class KidTracker {
     if (s.active && signal) s.left = true;
     s.active = false;
     s.present = false;
+    s.held = false;
     s.signals.jump = s.signals.squat = s.signals.clap = s.signals.wave = s.signals.armsOut = s.signals.handsUp = s.signals.still = false;
     s.signals.handUp.L = s.signals.handUp.R = false;
     this.ints[i].reset();
   }
 
-  /** The free slot that keeps the left-to-right order of the active ones; when all are taken the one whose child is gone longest. */
-  private pickSlot(cx: number): number {
+  /**
+   * The free slot that keeps the left-to-right order of the active ones. When all are taken: the slot of the child who has been gone
+   * longest, but only if that child has really been gone for a while (never a child who was seen a moment ago).
+   */
+  private pickSlot(cx: number, now: number): number {
     let best = -1;
     let bestScore = Infinity;
     const n = this.maxKids;
@@ -315,11 +397,12 @@ export class KidTracker {
     }
     if (best >= 0) return best;
     let worst = -1;
-    let wl = 0;
+    let wl: number = CROWD_CFG.hold.stealMinLostSec;
     for (let s = 0; s < n; s++) {
       const sl = this.slots[s];
-      if (!sl.present && sl.lostFor > wl) {
-        wl = sl.lostFor;
+      const lost = (now - this.ints[s].lastSeenNow) / 1000;
+      if (!sl.present && lost > wl) {
+        wl = lost;
         worst = s;
       }
     }
@@ -327,7 +410,8 @@ export class KidTracker {
   }
 
   /**
-   * @param people the tracker's people of this detection (stage px, mirrored)
+   * @param people the tracker's people of this detection (stage px, mirrored). With crops of the picture analysed one after the other
+   *   these are only the people of the crop analysed now: a slot that is not in the list is not "gone", it just keeps ageing.
    * @param now engine time (ms)
    * @param capture camera capture time (ms): filters and velocities run on it
    * @param W stage width (limits how far a child may "jump" between detections)
@@ -335,34 +419,42 @@ export class KidTracker {
   update(people: readonly Person[], now: number, capture: number = now, W = this.W): void {
     this.W = W;
     const n = this.maxKids;
+    const M = CROWD_CFG.match;
     // 1) candidates
     let nc = 0;
-    for (let i = 0; i < people.length && nc < n; i++) {
+    for (let i = 0; i < people.length && nc < CAND_MAX; i++) {
       if (this.isKid(people[i])) this.cand[nc++] = people[i];
     }
     this.nc = nc;
     this.candUsed.fill(0);
     this.slotTaken.fill(0);
-    // 2) greedy global-nearest matching of active slots (also those whose child is briefly gone) to candidates
+    // 2) greedy global matching of active slots (also those whose child is briefly gone) to candidates: cheapest pair first.
+    //    cost = distance to the slot's PREDICTED position / its allowed distance, higher for slots that were not seen for a while,
+    //    so a child who is tracked right now wins against a slot that is only held.
     for (let iter = 0; iter < n; iter++) {
       let bs = -1;
       let bc = -1;
-      let bd = Infinity;
+      let bcost = Infinity;
       for (let s = 0; s < n; s++) {
         const sl = this.slots[s];
         if (!sl.active || this.slotTaken[s]) continue;
         const it = this.ints[s];
-        const gap = Math.min(0.25, Math.max(0, (now - it.lastSeenNow) / 1000));
+        const away = Math.max(0, (now - it.lastSeenNow) / 1000);
+        const gap = Math.min(M.predictMaxSec, away);
         const px = it.cx + it.vcx * gap;
         const py = it.cy + it.vcy * gap;
-        const away = Math.max(0, (now - it.lastSeenNow) / 1000);
-        const lim = Math.min(W * KIDS_CFG.matchMaxFrac, sl.scale * (KIDS_CFG.matchScales + KIDS_CFG.matchGrowPerSec * away));
+        const lim = Math.min(W * M.maxFrac, sl.scale * (M.scales + Math.min(M.growMax, M.growPerSec * away)));
+        const stale = 1 + M.staleCost * Math.min(2, away);
         for (let c = 0; c < nc; c++) {
           if (this.candUsed[c]) continue;
           const p = this.cand[c] as Person;
+          const ratio = p.scale / Math.max(1, sl.scale);
+          if (ratio > M.scaleRatio || ratio < 1 / M.scaleRatio) continue;
           const d = Math.hypot(p.center.x - px, p.center.y - py);
-          if (d < lim && d < bd) {
-            bd = d;
+          if (d >= lim) continue;
+          const cost = (d / lim) * stale;
+          if (cost < bcost) {
+            bcost = cost;
             bs = s;
             bc = c;
           }
@@ -373,9 +465,9 @@ export class KidTracker {
       this.candUsed[bc] = 1;
       this.apply(bs, this.cand[bc] as Person, now, capture, false);
     }
-    // 3) new children, left to right
+    // 3) new children (seen twice), left to right
     let m = 0;
-    for (let c = 0; c < nc; c++) if (!this.candUsed[c]) this.order[m++] = c;
+    for (let c = 0; c < nc; c++) if (!this.candUsed[c] && this.confirmed(this.cand[c] as Person, now)) this.order[m++] = c;
     for (let a = 1; a < m; a++) {
       const v = this.order[a];
       const vx = (this.cand[v] as Person).center.x;
@@ -388,9 +480,9 @@ export class KidTracker {
     }
     for (let k = 0; k < m; k++) {
       const p = this.cand[this.order[k]] as Person;
-      const s = this.pickSlot(p.center.x);
+      const s = this.pickSlot(p.center.x, now);
       if (s < 0) continue;
-      if (this.slots[s].active) this.free(s, true); // stole a slot whose child is gone
+      if (this.slots[s].active) this.free(s, true); // takes over a slot whose child has been gone for a while
       this.slotTaken[s] = 1;
       this.apply(s, p, now, capture, true);
     }
@@ -401,6 +493,7 @@ export class KidTracker {
   private apply(i: number, p: Person, now: number, cap: number, fresh: boolean): void {
     const sl = this.slots[i];
     const it = this.ints[i];
+    const MO = CROWD_CFG.motion;
     if (fresh) {
       it.reset();
       sl.active = true;
@@ -414,12 +507,15 @@ export class KidTracker {
       sl.signals.stillFor = 0;
       sl.signals.energy = 0.6;
     }
-    const dtDet = it.hasDet ? Math.min(0.2, Math.max(0.001, (cap - it.tDet) / 1000)) : 1 / 30;
+    const dtDet = it.hasDet ? Math.min(MO.maxDtSec, Math.max(0.001, (cap - it.tDet) / 1000)) : 1 / 30;
     // centre velocity (position continuity)
     if (!fresh) {
-      const a = velAlpha(Math.max(0.001, (now - it.lastSeenNow) / 1000), 120);
-      it.vcx = lerp(it.vcx, (p.center.x - it.cx) / Math.max(0.001, (now - it.lastSeenNow) / 1000), a);
-      it.vcy = lerp(it.vcy, (p.center.y - it.cy) / Math.max(0.001, (now - it.lastSeenNow) / 1000), a);
+      const dtc = (now - it.lastSeenNow) / 1000;
+      if (dtc >= 0.015) {
+        const a = velAlpha(dtc, 120);
+        it.vcx = lerp(it.vcx, (p.center.x - it.cx) / dtc, a);
+        it.vcy = lerp(it.vcy, (p.center.y - it.cy) / dtc, a);
+      }
     }
     it.cx = p.center.x;
     it.cy = p.center.y;
@@ -428,17 +524,34 @@ export class KidTracker {
     sl.center.y = p.center.y;
     sl.scale = lerp(sl.scale, p.scale, 0.3);
     sl.present = true;
+    sl.held = false;
     sl.lostFor = 0;
     const va = velAlpha(dtDet, 30);
+    // two measurements (e.g. from two crops that both contain the child) closer than a few ms must not make a velocity out of noise
+    if (it.hasDet && cap - it.tDet >= 4 && cap - it.tDet < 1000) {
+      const gap = (cap - it.tDet) / 1000;
+      it.dtEma += (gap - it.dtEma) * 0.2;
+      it.chaseDt = Math.max(it.dtEma, gap);
+    }
+    const measureVel = it.hasDet && cap - it.tDet < MO.velGapMs;
+    const updVel = measureVel && cap - it.tDet >= 4;
+    const maxV = MO.maxSpeedScales * Math.max(20, sl.scale);
     for (let k = 0; k < N_KP; k++) {
       const src = p.lm[KP[k]];
       const nx = it.fx[k].filter(src.x, cap);
       const ny = it.fy[k].filter(src.y, cap);
       const f = it.filt;
-      if (it.hasDet && cap - it.tDet < 200) {
-        it.vel[k * 2] = lerp(it.vel[k * 2], (nx - f[k * 2]) / dtDet, va);
-        it.vel[k * 2 + 1] = lerp(it.vel[k * 2 + 1], (ny - f[k * 2 + 1]) / dtDet, va);
-      } else {
+      if (updVel) {
+        let vx = lerp(it.vel[k * 2], (nx - f[k * 2]) / dtDet, va);
+        let vy = lerp(it.vel[k * 2 + 1], (ny - f[k * 2 + 1]) / dtDet, va);
+        const sp = Math.hypot(vx, vy);
+        if (sp > maxV) {
+          vx *= maxV / sp;
+          vy *= maxV / sp;
+        }
+        it.vel[k * 2] = vx;
+        it.vel[k * 2 + 1] = vy;
+      } else if (!measureVel) {
         it.vel[k * 2] = it.vel[k * 2 + 1] = 0;
       }
       f[k * 2] = nx;
@@ -447,6 +560,11 @@ export class KidTracker {
       o.x = nx;
       o.y = ny;
       o.v = src.v;
+    }
+    // the drawn points start at the measurement for a new child (or one who was away for a long time) and chase it otherwise
+    if (!it.rInit || cap - it.tDet > 1000) {
+      for (let q = 0; q < N_KP * 2; q++) it.rx[q] = it.filt[q];
+      it.rInit = true;
     }
     it.tDet = cap;
     it.hasDet = true;
@@ -579,9 +697,11 @@ export class KidTracker {
     sg.still = it.stillOn;
     sg.stillFor = it.stillOn ? sg.stillFor + dt : 0;
   }
-
   /** presence + freeing, by engine time */
   private sweep(now: number): void {
+    const H = CROWD_CFG.hold;
+    const hold = this.holdSec();
+    const free = this.freeSec(hold);
     let count = 0;
     for (let i = 0; i < this.maxKids; i++) {
       const sl = this.slots[i];
@@ -590,29 +710,46 @@ export class KidTracker {
       const lost = Math.max(0, (now - it.lastSeenNow) / 1000);
       sl.lostFor = lost;
       sl.seenFor = Math.max(0, (now - it.joinedAt) / 1000);
-      sl.present = lost < 0.35;
+      sl.present = lost < hold;
+      sl.held = sl.present && lost > H.heldAfterSec;
       if (sl.present) count++;
       else {
         sl.signals.stillFor = 0;
-        if (lost > FREE_AFTER_SEC) this.free(i, true);
+        if (lost > free) this.free(i, true);
       }
     }
     this.count = count;
   }
 
-  /** Render-rate update: moves the points to where the child is now; frees the slots of children who left. */
-  extrapolate(now: number, lead: number = KIDS_CFG.extrapolation.leadMs): void {
+  /**
+   * Render-rate update: moves the points to where the child is now; frees the slots of children who left.
+   * Every point has a target = last measurement + velocity that fades out with time (so a child keeps moving through a missed
+   * detection and slows to a stop instead of freezing or flying off); the drawn point chases the target, which hides the jump when
+   * the next measurement arrives.
+   */
+  extrapolate(now: number, lead: number = CROWD_CFG.motion.leadMs): void {
     this.sweep(now);
-    const { maxMs, gain } = KIDS_CFG.extrapolation;
+    const MO = CROWD_CFG.motion;
+    const tau = MO.holdTauMs / 1000;
     for (let i = 0; i < this.maxKids; i++) {
       const sl = this.slots[i];
       if (!sl.active || !sl.present) continue;
       const it = this.ints[i];
-      const dtMs = leadMs(now, it.tDet, lead, maxMs);
+      const age = Math.max(0, now - it.tDet + lead) / 1000;
+      const reach = tau * (1 - Math.exp(-age / tau)) * MO.gain;
+      const dtR = it.lastRender ? (now - it.lastRender) / 1000 : 0;
+      it.lastRender = now;
+      if (dtR > 0) it.chaseDt += (it.dtEma - it.chaseDt) * (1 - Math.exp(-dtR / MO.chaseRelaxSec));
+      const chaseMs = Math.min(MO.chaseMaxMs, Math.max(MO.chaseMinMs, it.chaseDt * 1000 * MO.chaseFrac));
+      const alpha = !it.rInit || dtR > MO.snapAfterSec ? 1 : 1 - Math.exp((-dtR * 1000) / chaseMs);
+      it.rInit = true;
       for (let k = 0; k < N_KP; k++) {
         const o = it.arr[k];
-        o.x = predict(it.filt[k * 2], it.vel[k * 2], dtMs, gain);
-        o.y = predict(it.filt[k * 2 + 1], it.vel[k * 2 + 1], dtMs, gain);
+        const j = k * 2;
+        it.rx[j] += (it.filt[j] + it.vel[j] * reach - it.rx[j]) * alpha;
+        it.rx[j + 1] += (it.filt[j + 1] + it.vel[j + 1] * reach - it.rx[j + 1]) * alpha;
+        o.x = it.rx[j];
+        o.y = it.rx[j + 1];
       }
     }
   }

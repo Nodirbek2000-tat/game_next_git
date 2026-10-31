@@ -2,9 +2,9 @@
 //  - the wall is painted ONCE per wall into a small offscreen canvas (bricks + the pose-shaped holes); every frame it is only
 //    one drawImage that grows from the centre (perspective: slow far away, fast at the end) and flies through at the end
 //  - two big pictogram cards (left and right) show the pose the whole time, three dots light up with the countdown chimes
-//  - a green check above a child who holds the pose, sparks + ring + star badge for those who passed, a soft "💫" bump for the rest
+//  - a green check above a child who holds the pose, sparks + ring + star badge for those who passed, a friendly "💪" (try again) for the rest
 
-import { KID_COLORS } from "../bogcha/common";
+import { KID_COLORS, drawEmoji, minScaleFor } from "../bogcha/common";
 import type { KidSlot } from "../bogcha/common";
 import { FIG_H, drawFigure, figMid, type PoseDef } from "./poses";
 import { ROUND_CFG, SLOTS, type Round } from "./round";
@@ -25,8 +25,6 @@ const C_GOLD = 5;
 const C_WHITE = 6;
 const C_GREEN = 7;
 const C_PINK = 8;
-
-const EMOJI = '"Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
 
 /** wall scale (1 = covers the stage) while it comes: p = 0..1 */
 export function approachScale(p: number): number {
@@ -57,6 +55,9 @@ export class Painter {
   private tex: HTMLCanvasElement | null = null;
   private texKey = -1;
   private texOk = false;
+  private cardTex: HTMLCanvasElement | null = null;
+  private cardKey = -1;
+  private cardPad = 0;
   // sparks (pooled)
   private readonly sx = new Float32Array(MAX_SPARKS);
   private readonly sy = new Float32Array(MAX_SPARKS);
@@ -69,8 +70,6 @@ export class Painter {
   private dt = 0;
   private fw = 0;
   private fh = 0;
-  private fontEmoji = "";
-  private fontBig = "";
 
   constructor(private readonly rnd: () => number = Math.random) {}
 
@@ -109,8 +108,6 @@ export class Painter {
   private layout(w: number, h: number): void {
     this.fw = w;
     this.fh = h;
-    this.fontEmoji = `${Math.round(h * 0.09)}px ${EMOJI}`;
-    this.fontBig = `${Math.round(h * 0.2)}px ${EMOJI}`;
   }
 
   /** paints the wall of the current pose into the offscreen canvas (once per wall) */
@@ -157,11 +154,8 @@ export class Painter {
     c.globalCompositeOperation = "source-over";
   }
 
-  private card(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, p: PoseDef, pop: number): void {
-    ctx.save();
-    ctx.translate(x + s / 2, y + s / 2);
-    ctx.scale(pop, pop);
-    ctx.translate(-s / 2, -s / 2);
+  /** the pictogram card (frame + figure) at (0, 0), s px wide */
+  private paintCard(ctx: CanvasRenderingContext2D, s: number, p: PoseDef): void {
     roundRectPath(ctx, 0, 0, s, s, s * 0.14);
     ctx.fillStyle = "rgba(255,255,255,.9)";
     ctx.fill();
@@ -170,6 +164,38 @@ export class Painter {
     ctx.stroke();
     const u = (s * 0.82) / FIG_H;
     drawFigure(ctx, p, s / 2, s * 0.5 - figMid(p) * u, u, 1, BODY, HEAD);
+  }
+
+  /** the card is painted ONCE per wall into a small offscreen canvas (null when there is no canvas: it is painted directly) */
+  private cardTexture(s: number, p: PoseDef, index: number): HTMLCanvasElement | null {
+    if (typeof document === "undefined") return null;
+    const key = index * 100000 + Math.round(s);
+    if (this.cardKey === key) return this.cardTex;
+    this.cardKey = key;
+    this.cardPad = Math.ceil(s * 0.04);
+    const size = Math.ceil(s) + this.cardPad * 2;
+    if (!this.cardTex) this.cardTex = document.createElement("canvas");
+    const c = this.cardTex.getContext("2d");
+    if (!c) {
+      this.cardTex = null;
+      return null;
+    }
+    this.cardTex.width = size;
+    this.cardTex.height = size;
+    c.clearRect(0, 0, size, size);
+    c.translate(this.cardPad, this.cardPad);
+    this.paintCard(c, s, p);
+    return this.cardTex;
+  }
+
+  private card(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, p: PoseDef, pop: number, index: number): void {
+    ctx.save();
+    ctx.translate(x + s / 2, y + s / 2);
+    ctx.scale(pop, pop);
+    ctx.translate(-s / 2, -s / 2);
+    const tex = this.cardTexture(s, p, index);
+    if (tex) ctx.drawImage(tex, -this.cardPad, -this.cardPad);
+    else this.paintCard(ctx, s, p);
     ctx.restore();
   }
 
@@ -222,8 +248,8 @@ export class Painter {
     const size = h * 0.26;
     const k = clamp01(t / 0.45);
     const pop = k < 1 ? 1 - Math.pow(1 - k, 3) * Math.cos(k * 9) : 1 + (r.progress > 0.55 ? 0.035 * Math.sin(now / 160) : 0);
-    this.card(ctx, pad, h * 0.17, size, r.pose, pop);
-    this.card(ctx, w - pad - size, h * 0.17, size, r.pose, pop);
+    this.card(ctx, pad, h * 0.17, size, r.pose, pop, r.index);
+    this.card(ctx, w - pad - size, h * 0.17, size, r.pose, pop, r.index);
     // countdown dots
     const dr = h * 0.016;
     for (let side = 0; side < 2; side++) {
@@ -245,32 +271,32 @@ export class Painter {
     this.drawCards(ctx, w, h, now, r);
     const q = r.phase === "result" ? clamp01(r.t / ROUND_CFG.result) : 0;
     const sr = Math.max(3, h * 0.0085);
+    const minScale = minScaleFor(h);
     for (let i = 0; i < SLOTS; i++) {
       const k = kids[i];
       if (!k.active) continue;
+      // marks keep a readable size for a small / far child
+      const hr = Math.max(k.headR, minScale * 0.42);
       const hx = k.pts.head.x;
-      const hy = k.pts.head.y - k.headR * 2.7;
+      const hy = k.pts.head.y - hr * 2.7;
       if (r.phase === "approach") {
-        if (r.gates[i].ok && r.progress >= ROUND_CFG.armFrac) this.badge(ctx, hx, hy, Math.max(16, k.headR * 0.95));
+        if (r.gates[i].ok && r.progress >= ROUND_CFG.armFrac) this.badge(ctx, hx, hy, Math.max(16, hr * 0.95));
       } else if (r.phase === "result") {
         const res = r.results[i];
         if (res === 1) {
           const pop = 1 + 0.35 * Math.max(0, 1 - q * 4);
-          this.badge(ctx, hx, hy, Math.max(18, k.headR * 1.1) * pop);
+          this.badge(ctx, hx, hy, Math.max(18, hr * 1.1) * pop);
           ctx.globalAlpha = 1 - q;
           ctx.beginPath();
-          ctx.arc(k.pts.head.x, k.pts.head.y, k.headR * (2.2 + q * 5), 0, TAU);
-          ctx.lineWidth = Math.max(3, k.headR * 0.35);
+          ctx.arc(k.pts.head.x, k.pts.head.y, hr * (2.2 + q * 5), 0, TAU);
+          ctx.lineWidth = Math.max(3, hr * 0.35);
           ctx.strokeStyle = k.color;
           ctx.stroke();
           ctx.globalAlpha = 1;
         } else if (res === 2) {
-          ctx.font = this.fontEmoji;
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
+          // a friendly "try again" muscle, not a failure sign
           ctx.globalAlpha = 1 - clamp01((q - 0.6) / 0.4);
-          ctx.fillStyle = "#000";
-          ctx.fillText("💫", hx + Math.sin(now / 55) * k.headR * 0.5 * (1 - q), hy);
+          drawEmoji(ctx, "💪", hx + Math.sin(now / 55) * hr * 0.5 * (1 - q), hy, h * 0.09);
           ctx.globalAlpha = 1;
         }
       }
@@ -281,12 +307,8 @@ export class Painter {
       ctx.save();
       ctx.translate(w / 2, h * 0.42);
       ctx.scale(pop, pop);
-      ctx.font = this.fontBig;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
       ctx.globalAlpha = 1 - clamp01((q - 0.7) / 0.3);
-      ctx.fillStyle = "#000";
-      ctx.fillText("🎉", 0, 0);
+      drawEmoji(ctx, "🎉", 0, 0, h * 0.2);
       ctx.restore();
       ctx.globalAlpha = 1;
     }

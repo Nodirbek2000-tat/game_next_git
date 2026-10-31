@@ -53,10 +53,13 @@ export function segHit(ax: number, ay: number, bx: number, by: number, cx: numbe
   return qx * qx + qy * qy <= rad * rad;
 }
 
-/** radius of the "paw" of a child's hand, in px, from the shoulder width (small bodies get a generous reach) */
+/** radius of the "paw" of a child's hand, in px, from the shoulder width (small / far bodies get a generous reach) */
 export function pawRadius(scale: number, stageH: number): number {
-  return clamp(scale * 0.32, stageH * 0.03, stageH * 0.07);
+  return clamp(scale * 0.32, stageH * 0.045, stageH * 0.07);
 }
+
+/** a wrist is trusted from this visibility on (far children are seen poorly, but their hands still move clearly) */
+export const HAND_VIS = 0.1;
 
 // ------------------------------------------------------------------ bubbles
 export class BubblePool {

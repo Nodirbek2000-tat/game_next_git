@@ -8,6 +8,7 @@ export default defineKidsGame({
   maxKids: 5,
   roundSec: 80,
   music: "bouncy",
+  song: "/audio/bogcha/sanaymiz.mp3",
   dim: 0.5,
   create: (kit) => new SanaymizGame(kit),
 });

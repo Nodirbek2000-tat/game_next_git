@@ -1,5 +1,5 @@
-// The demonstration animation of each move: the big animal and the little stick figure both do it, so a child who cannot
-// read sees what to do. One pooled `Motion` object is filled per call (nothing allocated).
+// The demonstration animation of each move: the big animal itself does it (see art.ts), so a child who cannot read sees
+// what to do. One pooled `Motion` object is filled per call (nothing allocated).
 
 import type { Move } from "./animals";
 
@@ -10,19 +10,19 @@ export interface Motion {
   sy: number;
   /** tilt in radians */
   rot: number;
-  /** stick figure: arms 0 = down, 0.5 = out sideways, 1 = up */
+  /** arms / wings: 0 = down, 0.5 = out sideways, 1 = up */
   arm: number;
-  /** stick figure: hands together (0) .. apart (1); -1 = not clapping */
+  /** flippers: hands together (0) .. apart (1); -1 = not clapping */
   hands: number;
-  /** stick figure: 0 standing .. 1 deep squat */
+  /** 0 standing .. 1 deep squat */
   crouch: number;
-  /** stick figure: height of the hop 0..1 */
+  /** height of the hop 0..1 */
   lift: number;
-  /** arrow hint: -1 up, 1 down, 0 none */
-  arrow: -1 | 0 | 1;
+  /** ear swing in radians (the rabbit's ears bounce); 0 for the others */
+  ear: number;
 }
 
-export const newMotion = (): Motion => ({ dy: 0, sx: 1, sy: 1, rot: 0, arm: 0, hands: -1, crouch: 0, lift: 0, arrow: 0 });
+export const newMotion = (): Motion => ({ dy: 0, sx: 1, sy: 1, rot: 0, arm: 0, hands: -1, crouch: 0, lift: 0, ear: 0 });
 
 export const MOVE_PERIOD: Record<Move, number> = { jump: 0.9, flap: 0.7, froghop: 2, handsUp: 2, clap: 0.55, slowSquat: 4 };
 
@@ -41,7 +41,7 @@ export function motionAt(move: Move, t: number, o: Motion): Motion {
   o.hands = -1;
   o.crouch = 0;
   o.lift = 0;
-  o.arrow = 0;
+  o.ear = 0;
   switch (move) {
     case "jump": {
       const h = Math.sin(Math.PI * p);
@@ -49,7 +49,7 @@ export function motionAt(move: Move, t: number, o: Motion): Motion {
       o.dy = -0.2 * h;
       o.sy = 1 + 0.06 * h - 0.08 * (1 - h);
       o.sx = 1 - 0.04 * h + 0.06 * (1 - h);
-      o.arrow = -1;
+      o.ear = 0.5 * Math.sin(p * TAU * 2);
       break;
     }
     case "flap": {
@@ -73,7 +73,6 @@ export function motionAt(move: Move, t: number, o: Motion): Motion {
       o.dy = -0.22 * lift + 0.08 * crouch;
       o.sy = 1 - 0.2 * crouch + 0.1 * lift;
       o.sx = 1 + 0.18 * crouch - 0.06 * lift;
-      o.arrow = p < 0.5 ? 1 : -1;
       break;
     }
     case "handsUp": {
@@ -81,7 +80,6 @@ export function motionAt(move: Move, t: number, o: Motion): Motion {
       o.arm = clamp01(a);
       o.sy = 1 + 0.12 * o.arm;
       o.dy = -0.04 * o.arm;
-      o.arrow = -1;
       break;
     }
     case "clap": {
@@ -97,7 +95,6 @@ export function motionAt(move: Move, t: number, o: Motion): Motion {
       o.dy = 0.12 * o.crouch;
       o.sy = 1 - 0.2 * o.crouch;
       o.sx = 1 + 0.12 * o.crouch;
-      o.arrow = 1;
       break;
     }
   }

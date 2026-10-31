@@ -4,13 +4,12 @@
 
 import type { KidSlot } from "@/engine/tracking/kids";
 import { MAX_KIDS } from "@/engine/tracking/kids";
-import { pillPath, starPath } from "../bogcha/common";
+import { drawEmoji, minScaleFor, pillPath, starPath } from "../bogcha/common";
 import { ST, TUNE } from "./angler";
 import type { Baliqcha } from "./game";
 import { BASKET, FM, GOLDEN, N_FISH, WATER_TOP, jumpLift } from "./pond";
 
 const TAU = Math.PI * 2;
-const EMOJI = "'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif";
 
 const BODY = ["#ff7aa8", "#ff9a3d", "#b07cff", "#5fdc7a", "#3fd0ff", "#ff5a5a", "#b6e03b", "#6f8bff", "#ffd23d"];
 const DARK = ["#e0507f", "#e07414", "#8a54e0", "#34b955", "#1fa9d9", "#d63a3a", "#8fb81c", "#4a64e0", "#f0a800"];
@@ -86,17 +85,13 @@ function drawFloat(ctx: CanvasRenderingContext2D, x: number, y: number, r: numbe
 export class Painter {
   private w = 0;
   private h = 0;
-  private fontHint = "";
   private fontCount = "";
-  private fontBang = "";
 
   constructor(private g: Baliqcha) {}
 
   private layout(w: number, h: number): void {
     this.w = w;
     this.h = h;
-    this.fontHint = `${Math.round(h * 0.075)}px ${EMOJI}`;
-    this.fontBang = `${Math.round(h * 0.06)}px ${EMOJI}`;
     this.fontCount = `800 ${Math.round(Math.max(16, h * 0.034))}px system-ui, 'Segoe UI', sans-serif`;
   }
 
@@ -116,7 +111,8 @@ export class Painter {
     const p = this.g.pond;
     let s = p.size[i];
     if (p.mode[i] === FM.fly) s *= 1 - 0.35 * Math.min(1, p.t[i] / p.dur[i]);
-    return this.h * 0.082 * s;
+    // big, friendly fish (small children and far ones must see them well)
+    return this.h * 0.1 * s;
   }
 
   private oneFish(ctx: CanvasRenderingContext2D, i: number, now: number): void {
@@ -203,17 +199,17 @@ export class Painter {
     const ang = g.anglers[s];
     const w = this.w;
     const h = this.h;
-    const sc = Math.max(26, k.scale);
-    const hand = k.pts.rw.v >= 0.25 || k.pts.lw.v < 0.25 ? k.pts.rw : k.pts.lw;
-    const hx = hand.v >= 0.25 ? hand.x : k.center.x;
-    const hy = hand.v >= 0.25 ? hand.y : k.center.y;
+    const sc = Math.max(26, k.scale, minScaleFor(h));
+    const hand = k.pts.rw.v >= 0.12 || k.pts.lw.v < 0.12 ? k.pts.rw : k.pts.lw;
+    const hx = hand.v >= 0.12 ? hand.x : k.center.x;
+    const hy = hand.v >= 0.12 ? hand.y : k.center.y;
     const side = hx < w * 0.5 ? 1 : -1;
     const len = Math.min(sc * 2.1, h * 0.3);
     const tx = hx + side * len * 0.45;
     const ty = hy - len * 0.9;
     // the rod, in the child's colour
     ctx.strokeStyle = k.color;
-    ctx.lineWidth = Math.max(5, sc * 0.13);
+    ctx.lineWidth = Math.max(6, sc * 0.14);
     ctx.lineCap = "round";
     ctx.beginPath();
     ctx.moveTo(hx, hy);
@@ -221,7 +217,8 @@ export class Painter {
     ctx.stroke();
     ctx.strokeStyle = "rgba(255,255,255,.9)";
     ctx.lineWidth = Math.max(2, h * 0.004);
-    const fr = Math.max(9, h * 0.024);
+    // the float is big enough to see from far away
+    const fr = Math.max(12, h * 0.032);
     const fx = g.floatX[s] * w;
     const fy = g.floatY[s] * h;
     switch (ang.state) {
@@ -267,13 +264,9 @@ export class Painter {
         ctx.stroke();
         ctx.globalAlpha = 1;
         drawFloat(ctx, fx, y, fr, k.color);
-        if (biting) {
-          ctx.font = this.fontBang;
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.fillStyle = "#000";
-          ctx.fillText("❗", fx, fy - fr * 3.4 - Math.abs(Math.sin(now * 0.012)) * fr);
-        }
+        // whose float is it: a disc in the child's colour with their animal in it
+        this.owner(ctx, k, fx, fy + fr * 3, fr);
+        if (biting) drawEmoji(ctx, "❗", fx, fy - fr * 3.4 - Math.abs(Math.sin(now * 0.012)) * fr, fr * 3.2);
         break;
       }
       case ST.reel: {
@@ -289,6 +282,19 @@ export class Painter {
       }
     }
     ctx.lineCap = "butt";
+  }
+
+  /** the owner's mark under a float: a disc in the child's colour with the animal (no text, readable from far away) */
+  private owner(ctx: CanvasRenderingContext2D, k: KidSlot, x: number, y: number, fr: number): void {
+    const r = fr * 1.25;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, TAU);
+    ctx.fillStyle = k.color;
+    ctx.fill();
+    ctx.lineWidth = Math.max(2, fr * 0.2);
+    ctx.strokeStyle = "#fff";
+    ctx.stroke();
+    drawEmoji(ctx, k.animal.emoji, x, y, r * 1.5);
   }
 
   private splashes(ctx: CanvasRenderingContext2D): void {
@@ -372,7 +378,7 @@ export class Painter {
   private badge(ctx: CanvasRenderingContext2D, k: KidSlot, s: number, now: number): void {
     const g = this.g;
     const h = this.h;
-    const R = Math.max(14, k.headR);
+    const R = Math.max(14, k.headR, minScaleFor(h) * 0.5);
     const n = g.catches[s];
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -394,14 +400,14 @@ export class Painter {
     }
     // hint for children who cannot read: "pull!" hands while a fish bites, a rod while the line is free
     const ang = g.anglers[s];
-    if (k.present && ang.state === ST.bite) {
-      ctx.font = this.fontHint;
-      ctx.fillStyle = "#000";
-      ctx.fillText("🙌", k.pts.head.x + R * 2.6, k.pts.head.y - R * 1.2 - Math.abs(Math.sin(now * 0.01)) * R * 0.6);
-    } else if (k.present && ang.state === ST.idle && ang.cool <= 0 && ang.idleT > 2.5) {
-      ctx.font = this.fontHint;
-      ctx.fillStyle = "#000";
-      ctx.fillText("🎣", k.pts.head.x + R * 2.6, k.pts.head.y - R * 1.2 + Math.sin(now * 0.006) * R * 0.3);
+    const hs = Math.max(h * 0.09, R * 2.2);
+    if (ang.state === ST.bite) {
+      drawEmoji(ctx, "🙌", k.pts.head.x + R * 2.6, k.pts.head.y - R * 1.2 - Math.abs(Math.sin(now * 0.01)) * R * 0.6, hs);
+    } else if (ang.state === ST.idle && ang.cool <= 0 && ang.idleT > 2.5) {
+      drawEmoji(ctx, "🎣", k.pts.head.x + R * 2.6, k.pts.head.y - R * 1.2 + Math.sin(now * 0.006) * R * 0.3, hs);
+    } else if (ang.state === ST.reel || (ang.cool > TUNE.cool - 0.7 && ang.cool > 0)) {
+      // cheerful feedback over the child while the fish flies in and right after the catch
+      drawEmoji(ctx, "🎉", k.pts.head.x - R * 2.6, k.pts.head.y - R * 1.2 - Math.abs(Math.sin(now * 0.012)) * R * 0.6, hs * 0.9);
     }
   }
 }

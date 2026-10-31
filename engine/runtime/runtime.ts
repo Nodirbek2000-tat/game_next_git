@@ -21,9 +21,12 @@ import { meanLuma, computeFit, SMALL_H, SMALL_W, type SmallFrame } from "../trac
 import { ScanController } from "../tracking/scan";
 import { Tracker, PLAYER_COLORS } from "../tracking/tracker";
 import { KidTracker, MAX_KIDS, type KidSlot } from "../tracking/kids";
+import { CrowdVision } from "../tracking/crowdVision";
+import { CROWD_CFG } from "../tracking/crowdConfig";
 import type {
   AudioApi,
   DetectionResult,
+  Person,
   DrawFn,
   EngineApi,
   FxApi,
@@ -97,6 +100,8 @@ export class EngineRuntime implements EngineApi {
   tracker: Tracker;
   /** crowd (Bog‘cha) games: every detected person as a stable kid slot; updated only when `crowd` */
   kidTracker = new KidTracker();
+  /** crowd games: which crop of the picture the model looks at next, and the fusion of the crops (null = whole frame only) */
+  crowdVis: CrowdVision | null = null;
   fx = new Fx2D();
   audioEngine: AudioEngine;
   detector: Detector | null = null;
@@ -179,6 +184,7 @@ export class EngineRuntime implements EngineApi {
   private hudPending: HudValues | null = null;
   private hudAt = 0;
   private poseCount = 0;
+  private kidFresh: Person[] = [];
 
   constructor(private init: RuntimeInit) {
     this.slug = init.slug;
@@ -404,7 +410,7 @@ export class EngineRuntime implements EngineApi {
     try {
       if (this.env.viewer) throw new CameraError("viewer");
       const fake = this.fakeWin().__fake;
-      const cam = await openCamera(snapshotSettings().cameraId || undefined);
+      const cam = await openCamera(snapshotSettings().cameraId || undefined, { crowd: this.crowd });
       if (this.destroyed) {
         stopStream(cam.stream);
         return;
@@ -518,8 +524,24 @@ export class EngineRuntime implements EngineApi {
     }
     this.poseCount = this.wantedPoses();
     this.rememberDelegate();
+    if (this.crowd && !this.module.meta.needsHands) this.startCrowdVision(this.detector);
     if (this.detector.info.where === "main") this.sched = new DetectionScheduler({ cores: device.cores || 4, level, mainThread: true, mobile: device.isMobile, targetFps: this.renderCap });
     this.startDetectLoop();
+  }
+
+  /**
+   * Crop detection for crowd games (see tracking/tiles.ts): on by default for the worker back-end on a computer, off on phones and on the
+   * main thread. ?tiles=0 forces the old whole-frame path, ?tiles=2 / ?tiles=3 force that many crops (no automatic stepping down), for
+   * comparing on the real camera.
+   */
+  private startCrowdVision(det: Detector): void {
+    const q = this.query.get("tiles");
+    const n = q === null || q === "" ? NaN : Number(q);
+    const force = Number.isFinite(n) ? clamp(Math.floor(n), 0, 3) : null;
+    const T = CROWD_CFG.tiles;
+    const allow = this.device.isMobile ? T.mobile : det.info.where === "worker" ? true : T.mainThread;
+    this.crowdVis = new CrowdVision({ force, allow });
+    if (this.crowdVis.maxTiles >= 2) det.prepareTiles(this.crowdVis.maxTiles);
   }
 
   /**
@@ -643,12 +665,20 @@ export class EngineRuntime implements EngineApi {
         const captureTs = sanitizeCaptureTs(meta?.captureTime, now, now);
         const wantHands = this.module?.meta.needsHands ?? false;
         const opts: DetectOptions = { maxSide: this.sched.maxSide, lut: this.light.state.active ? this.lut : null };
-        det
-          .detect(v, now, wantHands, opts)
+        // crowd games: one crop of the picture per call (round-robin) while the crop models are ready, else the whole frame
+        const vis = this.crowdVis;
+        const crops = vis ? vis.plan(v.videoWidth, v.videoHeight, det.tilesReady) : null;
+        const run: Promise<DetectionResult | null> =
+          vis && crops ? det.detectTiles(v, now, crops, opts).then((out) => (out ? vis.ingest(out, crops, captureTs) : null)) : det.detect(v, now, wantHands, opts);
+        run
           .then((res) => {
             // applied right away (not at the next render frame): the render loop extrapolates from the capture time anyway
             if (res && !this.destroyed) {
               const done = performance.now();
+              if (vis) {
+                vis.report(done / 1000, done - now, this.sched.minIntervalMs(this.lat.infer));
+                this.kidTracker.cycleMs = vis.ctl.cycleMs;
+              }
               this.onDetection({ res, captureTs, startTs: now, doneTs: done }, done, false);
             }
           })
@@ -783,7 +813,7 @@ export class EngineRuntime implements EngineApi {
    */
   private tuneCamera(dtSec: number): void {
     const track = this.stream?.getVideoTracks()[0];
-    if (!track || this.fakeWin().__fake) return;
+    if (!track || this.fakeWin().__fake || this.crowd) return; // crowd games keep the 720p / 30 fps mode (more pixels per child, no 60 fps switch)
     const dark = this.light.state.active || this.light.mean < 0.3;
     if (this.camBoost === "up") {
       if (dark) {
@@ -875,7 +905,7 @@ export class EngineRuntime implements EngineApi {
     }
     this.tracker.small = this.small;
     this.tracker.process(p.res, now, fake ? now : p.captureTs);
-    if (this.crowd) this.kidTracker.update(this.tracker.people, now, fake ? now : p.captureTs, this.stage.w);
+    if (this.crowd) this.kidTracker.update(this.kidPeople(p.res.fresh), now, fake ? now : p.captureTs, this.stage.w);
     // stats
     if (this.lastDetStamp) {
       const d = now - this.lastDetStamp;
@@ -886,6 +916,16 @@ export class EngineRuntime implements EngineApi {
     const dtDet = this.lastDetectNow ? clamp((now - this.lastDetectNow) / 1000, 0.001, 0.2) : 1 / 30;
     this.lastDetectNow = now;
     if (scanning) this.onScan(dtDet, now);
+  }
+
+  /** The people the kid tracker may use: with crops only those of the crop analysed now (the rest are older results). */
+  private kidPeople(fresh: number | undefined): readonly Person[] {
+    const all = this.tracker.people;
+    if (fresh === undefined) return all;
+    const out = this.kidFresh;
+    out.length = 0;
+    for (const p of all) if (p.idx < fresh) out.push(p);
+    return out;
   }
 
   private onScan(dt: number, now: number): void {
@@ -1247,6 +1287,21 @@ export class EngineRuntime implements EngineApi {
     void h;
   }
 
+  /** Debug line of crowd games (?debug=1): bodies found, crops in use, detection rate, model time. */
+  private crowdDebug(): string {
+    const vis = this.crowdVis;
+    const v = this.video;
+    const cam = v?.videoWidth ? `${v.videoWidth}×${v.videoHeight}` : "—";
+    const tiled = !!vis?.tiled;
+    const n = vis && tiled ? vis.ctl.count : 1;
+    const rate = this.detEma;
+    const per = rate > 0 ? rate / n : 0;
+    const bodies = vis && tiled ? vis.bodies : this.tracker.people.length;
+    const slots = this.kidTracker.slots.map((k) => (k.active ? (k.present ? (k.held ? "~" : "+") : "…") : "-")).join("");
+    const crops = tiled ? `${n} bo‘lak (aylanma)` : "to‘liq kadr";
+    return `tanalar ${bodies} · bolalar ${this.kidTracker.count} [${slots}] · ${crops} · aniqlash ${rate.toFixed(1)}/s (har bola ≈${per.toFixed(1)}/s) · model ${Math.round(this.lat.infer)} ms · aylanish ${Math.round(vis?.ctl.cycleMs ?? 0)} ms · kamera ${cam}`;
+  }
+
   private publishDebug(): void {
     if (!this.init.debug) return;
     const d = this.detector?.info;
@@ -1264,6 +1319,7 @@ export class EngineRuntime implements EngineApi {
         light: `${Math.round(this.light.mean * 100)}%${this.light.state.active ? ` ↑γ${this.light.state.gamma.toFixed(2)}` : ""}${this.light.tooDark ? " QORONG‘I" : ""}`,
         camera: `${Math.round(this.camFps)} fps`,
         people: this.tracker.people.length,
+        crowd: this.crowd ? this.crowdDebug() : "",
         locked: this.crowd ? this.kidTracker.slots.map((k) => `${k.slot + 1}:${k.active ? (k.present ? "✔" : "…") : "—"}`).join("  ") : lock,
         gesture: this._players.map((p) => p.gestures.name).join(" | "),
         backend: this.fakeWin().__fake ? "window.__fake" : d ? `${d.where} · ${d.delegate.pose}${d.delegate.hand ? "/" + d.delegate.hand : ""}` : "—",

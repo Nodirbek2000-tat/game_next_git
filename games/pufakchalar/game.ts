@@ -1,9 +1,10 @@
 // Pufakchalar: soap bubbles float up, the children pop them with their hands. 2D only, pooled, no per-frame allocation.
 
-import { KID_COLORS, KID_ANIMALS, starPath, type KidsGameInstance, type KidsKit } from "../bogcha/common";
+import { KID_COLORS, drawEmoji, starPath, type KidsGameInstance, type KidsKit } from "../bogcha/common";
 import type { KidsGraph } from "../bogcha/common/music";
 import {
   BubblePool,
+  HAND_VIS,
   KIND_COLOUR,
   KIND_GOLD,
   MAX_BUBBLES,
@@ -56,9 +57,6 @@ export class PufakGame implements KidsGameInstance {
   // precomputed paint styles (no string building per frame)
   private readonly palette: string[] = [...KID_COLORS, "#ffffff", "#ffd23d"];
   private readonly colourFill: string[] = KID_COLORS.map((c) => rgba(c, 0.5));
-  private readonly emoji: string[] = KID_ANIMALS.map((a) => a.emoji);
-  private emojiFont = "";
-  private fontH = 0;
   private primed = false;
   private started = false;
   private t = 0;
@@ -103,7 +101,8 @@ export class PufakGame implements KidsGameInstance {
     let n = 0;
     for (let s = 0; s < SLOTS; s++) {
       const k = kit.kids[s];
-      if (k.active && k.present) {
+      // every child with a slot gets bubbles in front of them, also during a short loss
+      if (k.active) {
         env.kidX[n] = k.center.x;
         env.kidSlot[n] = s;
         n++;
@@ -151,7 +150,7 @@ export class PufakGame implements KidsGameInstance {
       for (let hand = 0; hand < 2; hand++) {
         const w = hand ? k.pts.rw : k.pts.lw;
         const idx = a + hand;
-        if (w.v < 0.25) {
+        if (w.v < HAND_VIS) {
           this.prevOk[idx] = 0;
           continue;
         }
@@ -218,10 +217,6 @@ export class PufakGame implements KidsGameInstance {
     this.lastDraw = now;
     this.sparks.step(dt, h * 0.45);
     this.rings.step(dt);
-    if (h !== this.fontH) {
-      this.fontH = h;
-      this.emojiFont = `${Math.round(h * 0.1)}px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif`;
-    }
     const pool = this.pool;
     const t = now / 1000;
     ctx.lineJoin = "round";
@@ -236,7 +231,7 @@ export class PufakGame implements KidsGameInstance {
       ctx.fillStyle = k.color;
       for (let hand = 0; hand < 2; hand++) {
         const p = hand ? k.pts.rw : k.pts.lw;
-        if (p.v < 0.25) continue;
+        if (p.v < HAND_VIS) continue;
         ctx.beginPath();
         ctx.arc(p.x, p.y, pr, 0, TAU);
         ctx.fill();
@@ -266,11 +261,7 @@ export class PufakGame implements KidsGameInstance {
         ctx.strokeStyle = "rgba(255,255,255,.9)";
         ctx.stroke();
         if (kind === KIND_COLOUR) {
-          ctx.font = this.emojiFont;
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.fillStyle = "#000";
-          ctx.fillText(this.emoji[pool.owner[i]], x, y + r * 0.05);
+          drawEmoji(ctx, kit.kids[pool.owner[i]].animal.emoji, x, y + r * 0.05, r * 1.15);
         } else if (kind === KIND_GOLD) {
           starPath(ctx, x, y, r * 0.5);
           ctx.fillStyle = "#fff8d6";
@@ -333,5 +324,5 @@ export class PufakGame implements KidsGameInstance {
 
 function kitMusic(kit: KidsKit): void {
   // gentle lullaby-like loop a little faster than written; pops are tuned to the same key
-  kit.music.play("calm", 1.3);
+  if (!kit.hasSong) kit.music.play("calm", 1.3);
 }

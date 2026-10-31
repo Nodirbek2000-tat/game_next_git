@@ -4,13 +4,13 @@
 
 import type { KidSlot } from "../bogcha/common";
 import { animalById, ANIMALS, type AnimalDef } from "./animals";
-import { KidProgress } from "./moves";
+import { KidProgress, softHands, type SoftHands } from "./moves";
 import type { Deck } from "./sequence";
 
 export const ROUND_CFG = {
-  /** length of one challenge in seconds */
-  act: 8,
-  /** the prompt is spoken this long after the animal appeared (its own sound goes first) */
+  /** length of one challenge in seconds (the animal calls its name and sounds first, so one second more than before) */
+  act: 9,
+  /** the prompt is spoken this long after the animal appeared (its own sound goes first); `hooks.promptAt` may delay it */
   voiceAt: 0.9,
   /** moves count from here (so the previous animal's pose does not count for the new one) */
   armAt: 0.8,
@@ -24,13 +24,16 @@ export const ROUND_CFG = {
 
 export type Phase = "act" | "praise";
 
-export type KidLike = Pick<KidSlot, "slot" | "active" | "present" | "signals">;
+/** `pts` / `scale` are optional: with them far children (poorly seen wrists) can still raise their hands */
+export type KidLike = Pick<KidSlot, "slot" | "active" | "present" | "signals"> & Partial<Pick<KidSlot, "pts" | "scale">>;
 
 export interface RoundHooks {
-  /** a new animal appeared: show it, play its sound */
+  /** a new animal appeared: show it, call its name, play its sound */
   start(a: AnimalDef, index: number): void;
   /** time to say the prompt */
   prompt(a: AnimalDef): void;
+  /** optional: seconds after the animal appeared at which the prompt is due (default `ROUND_CFG.voiceAt`) */
+  promptAt?(a: AnimalDef): number;
   /** a child did it: give the star. `first` = the first child of this challenge */
   done(kid: KidLike, a: AnimalDef, first: boolean): void;
   /** the challenge is over (`any`: at least one child did it) */
@@ -51,6 +54,7 @@ export class Round {
   readonly progress: KidProgress[] = Array.from({ length: NOKIDS }, () => new KidProgress());
   private prompted = false;
   private allDoneT = 0;
+  private readonly soft: SoftHands = { L: false, R: false };
 
   constructor(
     private deck: Deck,
@@ -93,7 +97,7 @@ export class Round {
       }
       return undefined;
     }
-    if (!this.prompted && this.t >= c.voiceAt) {
+    if (!this.prompted && this.t >= (this.hooks.promptAt?.(this.animal) ?? c.voiceAt)) {
       this.prompted = true;
       this.hooks.prompt(this.animal);
     }
@@ -109,7 +113,8 @@ export class Round {
         done++;
         continue;
       }
-      if (this.t >= c.armAt && p.step(move, k.signals, dt)) {
+      const soft = k.pts && k.scale !== undefined && move === "handsUp" ? softHands(k.pts, k.scale, this.soft) : undefined;
+      if (this.t >= c.armAt && p.step(move, k.signals, dt, soft)) {
         done++;
         this.doneCount++;
         this.hooks.done(k, this.animal, this.doneCount === 1);

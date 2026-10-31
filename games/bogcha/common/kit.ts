@@ -9,12 +9,16 @@
 import { useEffect } from "react";
 import type { EngineApi, GameModule, SceneProps } from "@/engine";
 import type { KidSlot } from "@/engine/tracking/kids";
-import { MAX_KIDS } from "@/engine/tracking/kids";
+import { KID_ANIMALS, MAX_KIDS } from "@/engine/tracking/kids";
 import { clamp } from "@/engine/math";
 import { drawKids } from "./avatar";
 import { KidsHud } from "./hud";
 import { KidSfx, MusicPlayer, type SongId } from "./music";
+import { SongPlayer } from "./song";
 import { Voice } from "./voice";
+
+/** "Salom, quyoncha!" ... one per slot, built once */
+const HELLO: readonly string[] = KID_ANIMALS.map((a) => `${a.emoji} Salom, ${a.name}!`);
 
 export interface KidsGameInstance {
   /** game logic; called every frame ONLY while playing (not in countdown / pause / after the round ended) */
@@ -35,6 +39,8 @@ export interface KidsKit {
   /** stage size in CSS px (the 2D canvas is already scaled) */
   readonly stage: { w: number; h: number };
   readonly music: MusicPlayer;
+  /** a recorded song plays instead of the melodies: a game that starts its own melody leaves it to the kit */
+  readonly hasSong: boolean;
   readonly sfx: KidSfx;
   readonly voice: Voice;
   readonly hud: KidsHud;
@@ -63,6 +69,8 @@ export interface KidsGameDef {
   roundSec?: number;
   /** background music started when the round starts (default "march"); null = the game controls the music itself */
   music?: SongId | null;
+  /** a recorded song played instead of `music` (which stays the fallback when the song cannot play) */
+  song?: string;
   create(kit: KidsKit): KidsGameInstance;
 }
 
@@ -75,6 +83,8 @@ export interface KidsRun {
 export function startKidsGame(engine: EngineApi, def: KidsGameDef): KidsRun {
   const getGraph = () => engine.audio.graph?.() ?? null;
   const music = new MusicPlayer(getGraph);
+  const song = def.song ? new SongPlayer(def.song, getGraph) : null;
+  song?.preload();
   const sfx = new KidSfx(getGraph);
   const voice = new Voice(sfx, { muted: () => (getGraph()?.sfx as GainNode | undefined)?.gain?.value === 0 });
   const hud = new KidsHud();
@@ -95,6 +105,7 @@ export function startKidsGame(engine: EngineApi, def: KidsGameDef): KidsRun {
     kids,
     stage,
     music,
+    hasSong: !!def.song,
     sfx,
     voice,
     hud,
@@ -126,6 +137,7 @@ export function startKidsGame(engine: EngineApi, def: KidsGameDef): KidsRun {
       if (finished) return;
       finished = true;
       music.stop();
+      song?.stop();
       const rows: { slot: number; emoji: string; color: string; stars: number }[] = [];
       let sum = 0;
       for (let i = 0; i < MAX_KIDS; i++) {
@@ -153,21 +165,33 @@ export function startKidsGame(engine: EngineApi, def: KidsGameDef): KidsRun {
     if (st === "play" && !finished) {
       if (!wasPlay) {
         wasPlay = true;
-        if (def.music !== null) music.play(def.music ?? "march");
+        const melody = (): void => {
+          if (def.music !== null) music.play(def.music ?? "march");
+        };
+        if (song) song.play(melody);
+        else melody();
         game.onStart?.();
       }
+      song?.tick();
       left = Math.max(0, left - dt);
       hud.left = left / roundSec;
-      for (let i = 0; i < kids.length; i++) if (kids[i].active && kids[i].present) seen[i] = true;
+      // everybody who has a slot took part (a child lost for a moment still counts)
+      for (let i = 0; i < kids.length; i++) if (kids[i].active) seen[i] = true;
       game.update?.(dt, now);
       if (left <= 0) kit.finish();
     } else if (wasPlay) {
       wasPlay = false;
       music.stop();
+      song?.pause();
     }
     hud.update(dt);
+    // a friendly hello over every child who takes a slot ("Salom, quyoncha!"), so everybody finds their animal
+    for (let i = 0; i < kids.length; i++) {
+      const k = kids[i];
+      if (k.joined && k.active) engine.fx?.popup?.(HELLO[i] ?? "Salom!", k.pts.head.x, Math.max(stage.h * 0.2, k.pts.head.y - k.headR * 3), k.color, 40, 1.3);
+    }
     game.drawBack?.(ctx, now);
-    drawKids(ctx, kids, now);
+    drawKids(ctx, kids, now, stage.h, stage.w);
     game.drawFront?.(ctx, now);
     hud.draw(ctx, stage.w, stage.h, now, voice.banner, true);
   });
@@ -178,6 +202,7 @@ export function startKidsGame(engine: EngineApi, def: KidsGameDef): KidsRun {
       off();
       game.dispose?.();
       music.dispose();
+      song?.dispose();
       voice.dispose();
     },
   };

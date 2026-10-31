@@ -55,7 +55,8 @@ export interface PoseKid {
   signals: { squat: boolean; armsOut: boolean; handsUp: boolean; handUp: { L: boolean; R: boolean } };
 }
 
-export const MIN_VIS = 0.25;
+/** far children are seen poorly: shoulders and wrists count from this visibility on */
+export const MIN_VIS = 0.15;
 /** a pose matches from this score */
 export const MATCH_MIN = 0.5;
 const RAD = 180 / Math.PI;

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { KID_ANIMALS, KID_COLORS, MAX_KIDS, type KidPt, type KidSlot } from "@/engine/tracking/kids";
 import { Angler, EV, ST, TUNE, type AnglerInput } from "./angler";
 import { Painter } from "./draw";
-import { Baliqcha, FLOAT_LANE, handHeight, type Sink } from "./game";
+import { Baliqcha, FLOAT_GAP, FLOAT_LANE, handHeight, type Sink } from "./game";
 import { BASKET, FM, GOLDEN, N_FISH, Pond } from "./pond";
 import { GroupVoice } from "./voiceGroup";
 
@@ -490,6 +490,78 @@ describe("baliqcha game", () => {
   });
 });
 
+// ------------------------------------------------------------------ far / tiny children
+/** the same child as mkKid, shrunk around the head: a small body far from the camera, wrists and elbows poorly seen */
+function mkFarKid(slot: number, cx: number, factor: number, vis: number): KidSlot {
+  const k = mkKid(slot, cx, "down");
+  const hx = k.pts.head.x;
+  const hy = k.pts.head.y;
+  for (const p of Object.values(k.pts)) {
+    p.x = hx + (p.x - hx) * factor;
+    p.y = hy + (p.y - hy) * factor;
+  }
+  k.scale *= factor;
+  k.headR *= factor;
+  k.center.y = hy + (k.center.y - hy) * factor;
+  for (const p of [k.pts.lw, k.pts.rw, k.pts.le, k.pts.re]) p.v = vis;
+  return k;
+}
+
+/** raise / lower the hands of a far kid (positions relative to its shoulders, in its own scale) */
+function farHands(k: KidSlot, up: boolean): void {
+  const p = k.pts;
+  const s = k.scale;
+  const sy = p.ls.y;
+  p.lw.y = p.rw.y = up ? sy - 1.8 * s : sy + 1.2 * s;
+  p.le.y = p.re.y = up ? sy - 0.6 * s : sy + 0.7 * s;
+}
+
+describe("far children", () => {
+  it("a tiny child (a fifth of the normal body, wrists seen at 0.12) can cast and pull", () => {
+    const kids = Array.from({ length: MAX_KIDS }, (_, i) => mkKid(i, 200 + i * 300, "down", { active: i === 0, present: i === 0 }));
+    kids[0] = mkFarKid(0, 600, 0.2, 0.12);
+    const rec: number[] = [];
+    const g = new Baliqcha(kids, { cast: (s) => rec.push(s), pull: (s) => rec.push(10 + s) }, () => 0.5);
+    farHands(kids[0], false);
+    expect(handHeight(kids[0])).toBeLessThan(0);
+    tick(g, 0.2);
+    farHands(kids[0], true);
+    expect(handHeight(kids[0])).toBeGreaterThan(TUNE.upOn);
+    tick(g, 0.3);
+    farHands(kids[0], false);
+    tick(g, 0.2);
+    expect(rec).toContain(0); // cast
+    tick(g, TUNE.flyTime + TUNE.biteMax + 0.3);
+    expect(g.anglers[0].state).toBe(ST.bite);
+    farHands(kids[0], true);
+    tick(g, 0.5);
+    expect(rec).toContain(10); // pull
+  });
+
+  it("a hand seen only at 0.1 and an elbow above the shoulders still count", () => {
+    const k = mkFarKid(0, 300, 0.25, 0.1);
+    farHands(k, true);
+    expect(handHeight(k)).toBeGreaterThan(TUNE.upOn);
+    k.pts.lw.v = k.pts.rw.v = 0.05; // wrists lost: the raised elbows are enough
+    expect(handHeight(k)).toBeGreaterThan(TUNE.upOn);
+  });
+
+  it("five children standing on the same spot get floats that are apart from each other", () => {
+    const { g, kids } = rig(5, () => 0.5);
+    for (const k of kids) k.center.x = 640;
+    tick(g, 0.1);
+    g.voice.onEvent("fish");
+    tick(g, 0.1);
+    for (let i = 0; i < 5; i++) expect(g.anglers[i].state).not.toBe(ST.idle);
+    const xs = Array.from(g.floatX.slice(0, 5)).sort((a, b) => a - b);
+    for (let i = 1; i < xs.length; i++) expect(xs[i] - xs[i - 1]).toBeGreaterThanOrEqual(FLOAT_GAP - 1e-5);
+    for (const x of xs) {
+      expect(x).toBeGreaterThanOrEqual(0.08);
+      expect(x).toBeLessThanOrEqual(0.92);
+    }
+  });
+});
+
 // ------------------------------------------------------------------ painting
 describe("painter", () => {
   const ctxMock = (): { ctx: CanvasRenderingContext2D; n: () => number } => {
@@ -516,6 +588,7 @@ describe("painter", () => {
       worst = Math.max(worst, m.n());
     }
     expect(worst).toBeGreaterThan(200);
-    expect(worst).toBeLessThan(900);
+    // (the real emoji sprites are one drawImage each; the mocked context falls back to text)
+    expect(worst).toBeLessThan(1100);
   });
 });

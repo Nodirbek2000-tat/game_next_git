@@ -1,14 +1,28 @@
 // Cartoon animal avatars drawn on the engine's 2D overlay: each child becomes 🐰 🐻 🐱 🐶 🐸 over their own body
 // (mirrored with the camera, because the kid slots are already in mirrored stage px). Plain 2D paths, ~30 canvas calls per
 // child, no allocations, no gradients, no shadows, no images.
+//
+// Every ACTIVE slot is drawn: a child who is lost for a moment (`present` false, up to 2 s) stays at the last position, slightly
+// faded; a far / tiny child gets a minimum avatar size (`minScaleFor`) and a small name tag, so the animal is always readable.
 
 import type { KidSlot, KidPt } from "@/engine/tracking/kids";
+import { pillPath } from "./hud";
 
 const TAU = Math.PI * 2;
 const SKIN_DARK = "#3b2a28";
-const MIN_V = 0.25;
+/** limbs are drawn when the landmark is seen at least this well (far children have low visibility) */
+const MIN_V = 0.2;
+/** head / shoulders only decide where the body is: even a poorly seen one is better than nothing */
+const TORSO_V = 0.08;
 
 const ok = (p: KidPt): boolean => p.v >= MIN_V;
+const seen = (p: KidPt): boolean => p.v >= TORSO_V;
+
+/** Smallest shoulder width (px) an avatar is drawn with: a child standing far away still gets a clear animal. */
+export const minScaleFor = (stageH: number): number => Math.max(30, stageH * 0.06);
+
+/** alpha of a child who is lost for a moment: fades from 0.8 to 0.4 over the 2 s grace period */
+export const lostAlpha = (lostFor: number): number => Math.max(0.4, 0.8 - lostFor * 0.2);
 
 function limb(ctx: CanvasRenderingContext2D, a: KidPt, b: KidPt, c: KidPt | null, w: number): void {
   ctx.lineWidth = w;
@@ -118,18 +132,20 @@ function face(ctx: CanvasRenderingContext2D, k: KidSlot, hx: number, hy: number,
   }
 }
 
-/** Draws one child as a cartoon animal. `t` = performance.now() (ms), only used for the little idle blink. */
-export function drawKid(ctx: CanvasRenderingContext2D, k: KidSlot, t = 0): void {
+/**
+ * Draws one child as a cartoon animal. `t` = performance.now() (ms), only used for the little idle blink.
+ * `minScale`: minimum shoulder width in px (see `minScaleFor`), so small / far children keep a readable avatar.
+ */
+export function drawKid(ctx: CanvasRenderingContext2D, k: KidSlot, t = 0, minScale = 0): void {
   const P = k.pts;
-  const sc = Math.max(24, k.scale);
+  const sc = Math.max(24, k.scale, minScale);
   const a = k.animal;
-  const shOk = ok(P.ls) && ok(P.rs);
-  const headOk = ok(P.head);
-  if (!shOk && !headOk) return;
-  const R = Math.max(14, k.headR * 1.35);
-  // shoulders / hips (estimated when out of the picture)
-  const sx = shOk ? (P.ls.x + P.rs.x) / 2 : P.head.x;
-  const sy = shOk ? (P.ls.y + P.rs.y) / 2 : P.head.y + R * 1.5;
+  const shOk = seen(P.ls) && seen(P.rs);
+  const headOk = seen(P.head);
+  const R = Math.max(14, k.headR * 1.35, minScale * 0.62);
+  // shoulders / hips (estimated when out of the picture); without head and shoulders the body centre places the child
+  const sx = shOk ? (P.ls.x + P.rs.x) / 2 : headOk ? P.head.x : k.center.x;
+  const sy = shOk ? (P.ls.y + P.rs.y) / 2 : headOk ? P.head.y + R * 1.5 : k.center.y - sc * 0.4;
   const hipsOk = ok(P.lh) && ok(P.rh);
   const hx = hipsOk ? (P.lh.x + P.rh.x) / 2 : sx;
   const hy = hipsOk ? (P.lh.y + P.rh.y) / 2 : sy + sc * 1.7;
@@ -187,10 +203,45 @@ function paw(ctx: CanvasRenderingContext2D, w: KidPt, sc: number, head: string, 
   circle(ctx, w.x, w.y + sc * 0.05, sc * 0.14, inner);
 }
 
-/** Draws every child who is on screen. */
-export function drawKids(ctx: CanvasRenderingContext2D, kids: readonly KidSlot[], t = 0): void {
+/** Name tag under the child: colour + name of the animal ("quyoncha"). The width is estimated, nothing is measured. */
+function nameTag(ctx: CanvasRenderingContext2D, k: KidSlot, stageH: number, stageW: number): void {
+  const fs = Math.min(30, Math.max(16, stageH * 0.034));
+  const name = k.animal.name;
+  const w = name.length * fs * 0.58 + fs * 1.2;
+  const h = fs * 1.5;
+  const P = k.pts;
+  const sc = Math.max(24, k.scale, minScaleFor(stageH));
+  const x = Math.min(Math.max(k.center.x, w / 2 + 4), Math.max(w / 2 + 4, stageW - w / 2 - 4));
+  // below the hips; when that is off the screen, just above the bottom edge
+  const hipsY = ok(P.lh) && ok(P.rh) ? (P.lh.y + P.rh.y) / 2 : (seen(P.ls) ? P.ls.y : k.center.y) + sc * 1.7;
+  const y = Math.min(hipsY + sc * 0.9, stageH - h * 0.8);
+  pillPath(ctx, x - w / 2, y - h / 2, w, h);
+  ctx.fillStyle = k.color;
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "#ffffff";
+  ctx.stroke();
+  ctx.font = `800 ${Math.round(fs)}px system-ui, "Segoe UI", sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#3a2a2a";
+  ctx.fillText(name, x, y + 1);
+}
+
+/**
+ * Draws every ACTIVE child (also while `present` is false for a moment: faded, at the last position).
+ * `stageH` > 0 turns on the minimum avatar size and the name tag of new / far children (`stageW` keeps the tag on screen).
+ */
+export function drawKids(ctx: CanvasRenderingContext2D, kids: readonly KidSlot[], t = 0, stageH = 0, stageW = 0): void {
+  const minScale = stageH > 0 ? minScaleFor(stageH) : 0;
   for (let i = 0; i < kids.length; i++) {
     const k = kids[i];
-    if (k.active && k.present) drawKid(ctx, k, t);
+    if (!k.active) continue;
+    const faded = !k.present;
+    if (faded) ctx.globalAlpha = lostAlpha(k.lostFor);
+    drawKid(ctx, k, t, minScale);
+    // new children and small / far ones get a name tag, so everybody knows which animal is theirs
+    if (stageH > 0 && (k.seenFor < 5 || k.scale < minScale * 1.4)) nameTag(ctx, k, stageH, stageW || 1e5);
+    if (faded) ctx.globalAlpha = 1;
   }
 }

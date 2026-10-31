@@ -41,6 +41,8 @@ export interface DebugUI {
   light: string;
   camera: string;
   people: number;
+  /** crowd games: bodies found, children, crops in use, detection rate, model time (empty otherwise) */
+  crowd: string;
   locked: string;
   gesture: string;
   backend: string;

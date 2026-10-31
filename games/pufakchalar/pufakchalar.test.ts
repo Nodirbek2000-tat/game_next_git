@@ -68,8 +68,8 @@ describe("hit tests", () => {
     expect(segHit(10, 10, 10, 10, 40, 10, 15)).toBe(false);
   });
   it("paw radius is generous for small bodies and bounded", () => {
-    expect(pawRadius(10, 720)).toBeCloseTo(720 * 0.03);
-    expect(pawRadius(100, 720)).toBeCloseTo(100 * 0.32);
+    expect(pawRadius(10, 720)).toBeCloseTo(720 * 0.045);
+    expect(pawRadius(120, 720)).toBeCloseTo(120 * 0.32);
     expect(pawRadius(900, 720)).toBeCloseTo(720 * 0.07);
   });
 });

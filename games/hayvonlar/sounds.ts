@@ -51,6 +51,13 @@ export const ANIMAL_SOUNDS: Record<AnimalId, readonly Blip[]> = {
   ],
 };
 
+/** Seconds the synthesised voice of each animal lasts (when its last blip ends). */
+export const SOUND_LEN: Record<AnimalId, number> = (() => {
+  const o = {} as Record<AnimalId, number>;
+  for (const id of Object.keys(ANIMAL_SOUNDS) as AnimalId[]) o[id] = ANIMAL_SOUNDS[id].reduce((m, b) => Math.max(m, b[2] + b[3]), 0);
+  return o;
+})();
+
 /** Plays the voice of an animal. `g` is `engine.audio.graph()` (null before audio is unlocked: silent). */
 export function playAnimal(g: { ac: AudioContext; sfx: AudioNode } | null, id: AnimalId): void {
   if (!g) return;

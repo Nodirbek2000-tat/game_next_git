@@ -2,7 +2,7 @@
 
 Foundation for the kindergarten games: **2–5 children at once**, no scan, no player lock, no lives, no losing, **2D only**
 (no three.js scene, no WebGL canvas), tiny and allocation-free per frame so it runs on the weakest PCs.
-Games: `pufakchalar`, `qotib-qol`, `hayvonlar`, `baliqcha` (catalogue entries already exist in `lib/games.ts`, `audience: "bogcha"`).
+Games: `pufakchalar`, `hayvonlar`, `baliqcha` (catalogue entries already exist in `lib/games.ts`, `audience: "bogcha"`).
 
 ```
 games/bogcha/common/   kit.ts (defineKidsGame, KidsKit)  avatar.ts  music.ts  voice.ts  hud.ts  index.ts
@@ -29,7 +29,7 @@ What the engine does for a crowd game (`meta.crowd = true`, set by `defineKidsGa
 
 ## Kid slots — `engine.kidSlots` (5 entries, stable)
 
-`const kids = kit.kids` (= `engine.kidSlots`). Always 5 `KidSlot`s; use `k.active && k.present`.
+`const kids = kit.kids` (= `engine.kidSlots`). Always 5 `KidSlot`s. Use `k.active && k.present` for hit tests / gestures, but `k.active` alone for anything that is DRAWN (marks, badges, rods): a child lost for a moment (`present` false, up to 2 s) must not vanish.
 
 | field | meaning |
 |---|---|
@@ -90,9 +90,18 @@ Draw in **stage px** on the 2D canvas (already scaled for the pixel ratio). `kit
 | `voice` | `say(id)` — see below |
 
 ### Avatars
-`drawKids(ctx, kids, now)` (done by the kit) draws each child as their animal: body blob, head with ears and face, arms and legs,
+`drawKids(ctx, kids, now, stageH, stageW)` (done by the kit) draws each ACTIVE child as their animal: body blob, head with ears and face, arms and legs,
 paws that follow the wrists. ~30 canvas calls per child, no gradients, no images. Open mouth on jump / clap / hands up.
-`drawKid(ctx, slot, now)` draws one child (e.g. for a game that wants its own order).
+
+* a child who is lost for a moment (`present` false) stays at the last position, faded (`lostAlpha`), until the slot is freed;
+* head / shoulders decide only WHERE the body is (visibility >= 0.08); limbs need >= 0.2 -- a far child with poor visibility still gets an animal;
+* minimum size: `minScaleFor(stageH)` (6 % of the stage height) -- small / far children get a readable animal, use it for your own marks too;
+* new children (first 5 s) and small ones get a name tag ("quyoncha") under the body; the kit pops "Salom, quyoncha!" when a child takes a slot.
+
+`drawKid(ctx, slot, now, minScale)` draws one child (e.g. for a game that wants its own order).
+
+### Emoji
+`drawEmoji(ctx, "🎣", x, y, size)` draws a colour emoji from a cached offscreen sprite (one `drawImage`); `fillText` of colour emoji is slow, do not use it per frame.
 
 ### Music and sfx
 Original melodies, Web Audio synthesis through the engine's audio graph (`engine.audio.graph()`), so the sound / music settings and the
@@ -145,7 +154,8 @@ Using signals instead of positions, e.g. "Qotib qol!": `if (musicStopped) for (c
 
 ## Rules for kids games
 
-* 2D only, no allocation in `update` / `draw*` (pool arrays, precompute strings), no per-frame gradients / shadows / `getImageData`.
+* 2D only, no allocation in `update` / `draw*` (pool arrays, precompute strings), no per-frame gradients / shadows / `getImageData` / `measureText`, no per-frame emoji `fillText` (use `drawEmoji`).
+* Far children (3-5 m): thresholds in body scales, wrists / elbows trusted from visibility 0.1-0.15, hit radii and marks never smaller than `minScaleFor(stageH)` allows; never rely on legs.
 * No losing, no lives, no scores that need reading; stars only go up. Texts Uzbek Latin, no Cyrillic.
 * Never rely on a single child: any number 1..5 may be present, they may come and go (`k.joined`, `k.left`).
 * Expect a low detection rate on weak PCs (15–30/s): use `signals` and the predicted `pts`, do not detect "speed" yourself.

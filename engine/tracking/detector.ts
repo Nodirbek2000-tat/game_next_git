@@ -1,5 +1,7 @@
-import type { DetectionResult, HandResultLike, PoseResultLike } from "../types";
+import type { DetectionResult, HandResultLike, PoseResultLike, TileOutput } from "../types";
+import { CROWD_CFG } from "./crowdConfig";
 import { applyLut, type Confidence } from "./lowLight";
+import { tileOutSize, tileRectPx, type PxRect, type Tile } from "./tiles";
 
 export type PoseModelName = "lite" | "full";
 export type Delegate = "GPU" | "CPU";
@@ -33,6 +35,8 @@ export interface DetectOptions {
   maxSide?: number;
   /** brighten the frame with this lookup table first (dim camera), see lowLight.ts */
   lut?: Uint8Array | null;
+  /** crop detection only: longest side (px) of the picture sent to the model for a crop (default CROWD_CFG.tiles.side) */
+  tileSide?: number;
 }
 
 /** Common surface of the two back-ends. */
@@ -40,6 +44,15 @@ interface Backend {
   readonly info: DetectorInfo;
   /** resolves null when the back-end is still busy with the previous frame */
   detect(video: HTMLVideoElement, ts: number, wantHands: boolean, opts?: DetectOptions): Promise<DetectionResult | null>;
+  /**
+   * Crowd games: analyse crops of the camera picture (cut from the full-resolution frame, each one shown to the model on its own).
+   * Resolves null when busy or when a crop has no model; the outputs carry landmarks normalised to the crop.
+   */
+  detectTiles(video: HTMLVideoElement, ts: number, tiles: readonly Tile[], opts?: DetectOptions): Promise<TileOutput[] | null>;
+  /** Make ready the models for `n` crops (the first one is the normal pose model); `tilesReady` tells when. Safe to call again. */
+  prepareTiles(n: number): void;
+  /** how many crops can be analysed right now (0 = none, use `detect`) */
+  readonly tilesReady: number;
   setConfidence(c: Confidence): void;
   /** how many bodies the pose model follows (fewer = faster) */
   setPoses(n: number): void;
@@ -80,6 +93,24 @@ class Enhancer {
     applyLut(image.data, lut);
     return { canvas: this.c, image };
   }
+
+  /** The same for a crop of the video (source pixels `r`), drawn `w` x `h` px. */
+  renderCrop(video: HTMLVideoElement, r: PxRect, w: number, h: number, lut: Uint8Array): { canvas: HTMLCanvasElement; image: ImageData } {
+    if (this.c.width !== w || this.c.height !== h) {
+      this.c.width = w;
+      this.c.height = h;
+    }
+    this.ctx.drawImage(video, r.sx, r.sy, r.sw, r.sh, 0, 0, w, h);
+    const image = this.ctx.getImageData(0, 0, w, h);
+    applyLut(image.data, lut);
+    return { canvas: this.c, image };
+  }
+}
+
+/** Longest side (px) of a crop picture; smaller when it is brightened on the main thread. */
+function cropSide(opts: DetectOptions | undefined): number {
+  const base = opts?.tileSide ?? CROWD_CFG.tiles.side;
+  return opts?.lut ? Math.min(base, CROWD_CFG.tiles.sideDark) : base;
 }
 
 async function fetchWithProgress(url: string, label: string, base: number, span: number, onProgress?: (pct: number, label: string) => void): Promise<Uint8Array> {
@@ -113,6 +144,7 @@ class WorkerBackend implements Backend {
   private nextId = 1;
   private pending: { id: number; resolve: (r: DetectionResult | null) => void } | null = null;
   private enhancer: Enhancer | null = null;
+  private tiles = 0;
 
   private constructor(worker: Worker, info: DetectorInfo) {
     this.worker = worker;
@@ -122,7 +154,9 @@ class WorkerBackend implements Backend {
       if (m.type === "result" && this.pending && this.pending.id === m.id) {
         const p = this.pending;
         this.pending = null;
-        p.resolve({ pose: m.pose as PoseResultLike | null, hand: m.hand as HandResultLike | null });
+        p.resolve({ pose: m.pose as PoseResultLike | null, hand: m.hand as HandResultLike | null, tiles: m.tiles as TileOutput[] | undefined });
+      } else if (m.type === "tilesReady") {
+        this.tiles = Number(m.n) || 0;
       } else if (m.type === "delegate") {
         this.info = { ...this.info, delegate: { ...this.info.delegate, pose: m.pose as Delegate } };
       } else if (m.type === "error") {
@@ -203,6 +237,54 @@ class WorkerBackend implements Backend {
     });
   }
 
+  get tilesReady(): number {
+    return this.tiles;
+  }
+
+  prepareTiles(n: number): void {
+    this.worker.postMessage({ type: "prepareTiles", n });
+  }
+
+  /** One picture per crop, cut from the full-resolution video frame and sent to the worker (ImageBitmaps are moved, not copied). */
+  async detectTiles(video: HTMLVideoElement, ts: number, tiles: readonly Tile[], opts?: DetectOptions): Promise<TileOutput[] | null> {
+    if (this.pending || tiles.length === 0) return null;
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    if (!vw || !vh || tiles.some((t) => t.index >= this.tiles)) return null;
+    const side = cropSide(opts);
+    const bitmaps: ImageBitmap[] = [];
+    try {
+      for (const t of tiles) bitmaps.push(await this.cropBitmap(video, tileRectPx(t, vw, vh), side, opts?.lut ?? null));
+    } catch (e) {
+      for (const b of bitmaps) b.close();
+      throw e;
+    }
+    if (this.pending) {
+      for (const b of bitmaps) b.close();
+      return null;
+    }
+    const id = this.nextId++;
+    const items = tiles.map((t, i) => ({ tile: t.index, bitmap: bitmaps[i] }));
+    const res = await new Promise<DetectionResult | null>((resolve) => {
+      this.pending = { id, resolve };
+      this.worker.postMessage({ type: "tiles", id, items, ts }, bitmaps);
+    });
+    return res?.tiles ?? null;
+  }
+
+  private async cropBitmap(video: HTMLVideoElement, r: PxRect, side: number, lut: Uint8Array | null): Promise<ImageBitmap> {
+    const o = tileOutSize(r.sw, r.sh, side);
+    if (lut) {
+      try {
+        this.enhancer ??= new Enhancer();
+        return await createImageBitmap(this.enhancer.renderCrop(video, r, o.w, o.h, lut).image);
+      } catch {
+        /* fall through to the plain crop */
+      }
+    }
+    return createImageBitmap(video, r.sx, r.sy, r.sw, r.sh, o.scaled ? { resizeWidth: o.w, resizeHeight: o.h, resizeQuality: "low" } : undefined);
+  }
+
   setConfidence(c: Confidence): void {
     this.worker.postMessage({ type: "confidence", det: c.det, pres: c.pres, track: c.track });
   }
@@ -239,11 +321,16 @@ class MainBackend implements Backend {
   info: DetectorInfo;
   private lastTs = 0;
   private enhancer: Enhancer | null = null;
+  /** models of the crops 1.. (crop 0 is `pose`), created on demand */
+  private extra: Landmarker[] = [];
+  private tilesWanted = 0;
+  private cropCanvas: HTMLCanvasElement | null = null;
 
   private constructor(
     private pose: Landmarker,
     private hand: Landmarker | null,
     info: DetectorInfo,
+    private mkPose: () => Promise<Landmarker>,
   ) {
     this.info = info;
   }
@@ -266,14 +353,16 @@ class MainBackend implements Backend {
       }
     };
     const poseBuf = await fetchWithProgress(`/models/pose_landmarker_${opts.poseModel}.task`, "Tana modeli", 15, 45, opts.onProgress);
-    const pose = (await make(vision.PoseLandmarker, poseBuf, { numPoses: opts.numPoses ?? 2, minPoseDetectionConfidence: opts.minConf ?? 0.5, minPosePresenceConfidence: opts.minConf ?? 0.5, minTrackingConfidence: opts.minConf ?? 0.5 }, "pose")) as unknown as Landmarker;
+    const poseExtra = { numPoses: opts.numPoses ?? 2, minPoseDetectionConfidence: opts.minConf ?? 0.5, minPosePresenceConfidence: opts.minConf ?? 0.5, minTrackingConfidence: opts.minConf ?? 0.5 };
+    const mkPose = async (): Promise<Landmarker> => (await make(vision.PoseLandmarker, poseBuf, poseExtra, "pose")) as unknown as Landmarker;
+    const pose = await mkPose();
     let hand: Landmarker | null = null;
     if (opts.hands) {
       const handBuf = await fetchWithProgress("/models/hand_landmarker.task", "Qo‘l modeli", 65, 25, opts.onProgress);
       hand = (await make(vision.HandLandmarker, handBuf, { numHands: 4, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5 }, "hand")) as unknown as Landmarker;
     }
     opts.onProgress?.(100, "Tayyor");
-    return new MainBackend(pose, hand, { where: "main", poseModel: opts.poseModel, delegate, hands: opts.hands });
+    return new MainBackend(pose, hand, { where: "main", poseModel: opts.poseModel, delegate, hands: opts.hands }, mkPose);
   }
 
   async detect(video: HTMLVideoElement, ts: number, wantHands: boolean, opts?: DetectOptions): Promise<DetectionResult | null> {
@@ -307,12 +396,84 @@ class MainBackend implements Backend {
     return { pose, hand };
   }
 
+  get tilesReady(): number {
+    return this.tilesWanted >= 2 && this.extra.length >= this.tilesWanted - 1 ? this.tilesWanted : 0;
+  }
+
+  prepareTiles(n: number): void {
+    const want = Math.max(1, Math.min(4, Math.floor(n)));
+    if (want === this.tilesWanted) return;
+    this.tilesWanted = want;
+    void (async () => {
+      try {
+        while (this.extra.length < want - 1) this.extra.push(await this.mkPose());
+      } catch (e) {
+        console.warn("crop models unavailable:", e);
+        for (const l of this.extra.splice(0)) {
+          try {
+            l.close();
+          } catch {
+            /* ignore */
+          }
+        }
+        this.tilesWanted = 0;
+      }
+    })();
+  }
+
+  /** Same as the worker back-end, on the main thread: the crop is drawn onto a canvas that the model reads. */
+  async detectTiles(video: HTMLVideoElement, ts: number, tiles: readonly Tile[], opts?: DetectOptions): Promise<TileOutput[] | null> {
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    if (!vw || !vh || tiles.length === 0 || tiles.some((t) => t.index >= this.tilesReady)) return null;
+    const side = cropSide(opts);
+    const out: TileOutput[] = [];
+    for (const t of tiles) {
+      const r = tileRectPx(t, vw, vh);
+      const o = tileOutSize(r.sw, r.sh, side);
+      let src: HTMLCanvasElement | null = null;
+      try {
+        if (opts?.lut) {
+          this.enhancer ??= new Enhancer();
+          const e = this.enhancer.renderCrop(video, r, o.w, o.h, opts.lut);
+          e.canvas.getContext("2d")?.putImageData(e.image, 0, 0);
+          src = e.canvas;
+        } else {
+          this.cropCanvas ??= document.createElement("canvas");
+          const c = this.cropCanvas;
+          if (c.width !== o.w || c.height !== o.h) {
+            c.width = o.w;
+            c.height = o.h;
+          }
+          c.getContext("2d")?.drawImage(video, r.sx, r.sy, r.sw, r.sh, 0, 0, o.w, o.h);
+          src = c;
+        }
+      } catch {
+        src = null;
+      }
+      let pose: PoseResultLike | null = null;
+      const lm = t.index === 0 ? this.pose : this.extra[t.index - 1];
+      if (src && lm) {
+        this.lastTs = Math.max(Math.round(ts), this.lastTs + 1);
+        try {
+          pose = lm.detectForVideo(src, this.lastTs) as unknown as PoseResultLike;
+        } catch (e) {
+          console.warn(e);
+        }
+      }
+      out.push({ tile: t.index, pose });
+    }
+    return out;
+  }
+
   setConfidence(c: Confidence): void {
+    for (const l of this.extra) void l.setOptions({ minPoseDetectionConfidence: c.det, minPosePresenceConfidence: c.pres, minTrackingConfidence: c.track }).catch(() => undefined);
     void this.pose.setOptions({ minPoseDetectionConfidence: c.det, minPosePresenceConfidence: c.pres, minTrackingConfidence: c.track }).catch(() => undefined);
     void this.hand?.setOptions({ minHandDetectionConfidence: c.det, minHandPresenceConfidence: c.pres, minTrackingConfidence: c.track }).catch(() => undefined);
   }
 
   setPoses(n: number): void {
+    for (const l of this.extra) void l.setOptions({ numPoses: n }).catch(() => undefined);
     void this.pose.setOptions({ numPoses: n }).catch(() => undefined);
   }
 
@@ -322,6 +483,7 @@ class MainBackend implements Backend {
 
   close(): void {
     try {
+      for (const l of this.extra) l.close();
       this.pose.close();
       this.hand?.close();
     } catch {
@@ -357,6 +519,21 @@ export class Detector {
 
   detect(video: HTMLVideoElement, ts: number, wantHands: boolean, opts?: DetectOptions): Promise<DetectionResult | null> {
     return this.backend.detect(video, ts, wantHands, opts);
+  }
+
+  /** Crowd games: analyse crops of the camera picture (see Backend.detectTiles). */
+  detectTiles(video: HTMLVideoElement, ts: number, tiles: readonly Tile[], opts?: DetectOptions): Promise<TileOutput[] | null> {
+    return this.backend.detectTiles(video, ts, tiles, opts);
+  }
+
+  /** Make the models for `n` crops ready in the background (the full-frame `detect` keeps working meanwhile). */
+  prepareTiles(n: number): void {
+    this.backend.prepareTiles(n);
+  }
+
+  /** How many crops can be analysed right now (0 = none). */
+  get tilesReady(): number {
+    return this.backend.tilesReady;
   }
 
   /** Switch the pose model to the CPU delegate (worker back-end only). */
