@@ -1,6 +1,6 @@
 """Harakat o'yinlari - CC0 street furniture from Poly Haven (polyhaven.com, CC0), prepared for the game in Blender.
 
-    blender -b --factory-startup --python tools/blender/props.py -- --src DIR_WITH_POLYHAVEN_GLTF --out public/models/poyga/props
+    blender -b --factory-startup --python tools/blender/props.py -- --src DIR_WITH_POLYHAVEN_GLTF --out assets-src/models/poyga/props
 
 Each asset (downloaded as glTF 1k) is imported, scaled to metres if needed, decimated to a triangle budget, its
 textures halved to 512 px, put on the ground (y = 0) and centred, then exported as one GLB.
@@ -27,7 +27,7 @@ def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True)
-    ap.add_argument("--out", default="public/models/poyga/props")
+    ap.add_argument("--out", default="assets-src/models/poyga/props")
     a = ap.parse_args(argv)
     os.makedirs(a.out, exist_ok=True)
     for d in sorted(glob.glob(os.path.join(a.src, "*"))):

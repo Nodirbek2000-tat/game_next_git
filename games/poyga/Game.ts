@@ -1,8 +1,9 @@
 import * as THREE from "three";
 import { drawText } from "@/engine/fx/fx2d";
 import { clamp, lerp } from "@/engine/math";
+import { texUrl } from "@/engine/quality/assetUrl";
 import { readBest, writeBest } from "@/engine/settings/store";
-import type { EngineApi } from "@/engine/types";
+import type { EngineApi, QualityLevel } from "@/engine/types";
 import { CONTROL_DEFAULTS } from "@/games/mashina/config";
 import { InputMapper, newControls, type PadState } from "@/games/mashina/logic/input";
 import { disposeCarParts } from "@/games/mashina/render/carModel";
@@ -11,11 +12,11 @@ import { DwellController } from "@/engine/ui/dwell";
 import { type Box, DOWNTOWN, type Post, HW, LANE, PITCH, blockKind, forgetFar, groundYWorld, plan, unwarp, unwarpDir, warpDir, warpX, warpZ } from "./city";
 import { CityView } from "./cityView";
 import { Car, type Hit, gearLabel } from "./carSim";
-import { CAR_IDS, CARS, type CarId, SKY_HDR, TRAFFIC_GLB } from "./config";
-import { CarMats, loadCar } from "./models";
+import { CAR_IDS, CARS, type CarId, LOD, type Lod, SKY_HDR, TRAFFIC_GLB, effectiveLevel, squeeze } from "./config";
+import { CarMats, type Precompile, disposeModels, loadCar } from "./models";
 import { PropField } from "./props3d";
 import { Skyline } from "./skyline";
-import { City, carCircles } from "./traffic";
+import { City, type TCar, carCircles } from "./traffic";
 import { TreeField } from "./trees3d";
 import { PedView, PlayerView, TrafficView } from "./views";
 
@@ -55,14 +56,24 @@ export class PoygaGame {
   private scene: THREE.Scene;
   private saved: { bg: THREE.Scene["background"]; fog: THREE.Scene["fog"]; env: THREE.Texture | null; fov: number; near: number; far: number; pos: THREE.Vector3; quat: THREE.Quaternion };
   private view: CityView;
-  private trees: TreeField;
-  private skyline: Skyline;
-  private props: PropField;
+  /** these three stream in after the first picture (see `stream`) */
+  private trees: TreeField | null = null;
+  private skyline: Skyline | null = null;
+  private props: PropField | null = null;
   private mats: CarMats;
+  private warmCars: THREE.Group;
   private player: PlayerView;
   private trafficV: TrafficView;
   private pedV: PedView;
-  private city = new City(9, 26);
+  private city: City;
+  /** the quality level the scene was built for, and the numbers it follows now (the controller never goes above the built level) */
+  private built: QualityLevel;
+  private lod: Lod;
+  private lodLevel: QualityLevel | null = null;
+  private lodSqueeze = 0;
+  /** seconds of streaming time (loading screen + play) and how many of the loading stages have started */
+  private clock = 0;
+  private stage = 0;
   private car: Car;
   private input = new InputMapper(CONTROL_DEFAULTS, { seated: false, kids: false, handbrakeSide: "R" });
   private controls = newControls();
@@ -81,8 +92,11 @@ export class PoygaGame {
   /** tyre marks and tyre smoke (braking hard, drifting, spinning the wheels) */
   private skid = new SkidMarks();
   private smoke = new Smoke();
-  private pedW: { x: number; z: number; h: number; color: number; phase: number }[] = [];
-  /** garage menu: a hand cursor (camera), a closed fist or holding still over a button presses it */
+  /** pedestrian poses, reused every frame */
+  private pedW = Array.from({ length: 30 }, () => ({ x: 0, z: 0, h: 0, color: 0, phase: 0 }));
+  /** seconds the tyre smoke may still be alive (the points are hidden and not updated after that) */
+  private smokeT = 0;
+  /** garage menu: a hand cursor (camera); holding still over a button presses it */
   private cursor: DwellController | null = null;
   private buttons: { id: "prev" | "next" | "color" | "go"; label: string; x: number; y: number; w: number; h: number }[] = [];
   private hover: string | null = null;
@@ -106,13 +120,22 @@ export class PoygaGame {
   private probe: PoygaProbe;
   private boxes: Box[] = [];
   private posts: Post[] = [];
-  private nearKey = "";
+  /** `posts` + the circles of the traffic near the car; the first postBase entries are the static ones */
+  private postBuf: Post[] = [];
+  private postBase = 0;
+  /** the block the collision lists were made for */
+  private nearI = NaN;
+  private nearJ = NaN;
   private gl: THREE.WebGLRenderer;
   private savedShadow = false;
   private tA = new THREE.Vector3();
   private tB = new THREE.Vector3();
   private tC = new THREE.Vector3();
   private tD = new THREE.Vector3();
+  private tw: [number, number] = [0, 0];
+  private probeRT: THREE.WebGLRenderTarget | null = null;
+  /** compile the shaders of an object that is not in the scene yet, against the real lights and haze (no stall when it is shown) */
+  private precompile: Precompile = (o) => this.compileFor(o, this.scene);
 
   constructor(
     private engine: EngineApi,
@@ -143,12 +166,15 @@ export class PoygaGame {
     this.carId = q && q in CARS ? q : stored && stored in CARS ? stored : "boron";
     if (e.query.get("start") === "1") this.phase = "drive";
     this.best = readBest(SLUG) / 1000;
+    this.built = e.quality.level;
+    this.lod = LOD[this.built];
+    this.city = new City(this.lod.cars, this.lod.peds);
 
     // ---- light: warm sun with soft shadows, sky fill, haze
     this.scene.background = new THREE.Color(0xd5dde4);
-    this.scene.fog = new THREE.Fog(0xd8dfe4, 160, e.quality.level === "high" ? 1600 : 1200);
+    this.scene.fog = new THREE.Fog(0xd8dfe4, this.lod.fogNear, this.lod.fogFar);
     camera.near = 0.25;
-    camera.far = 2400;
+    camera.far = this.lod.fogFar * 1.04;
     camera.updateProjectionMatrix();
     if (this.shadows) {
       gl.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -166,22 +192,18 @@ export class PoygaGame {
       sc.updateProjectionMatrix();
     }
     root.add(this.sun, this.sun.target, this.hemi);
-    void this.loadSky(gl);
+    this.loadSky(gl);
 
-    // ---- city and cars
-    this.view = new CityView(gl.capabilities.getMaxAnisotropy(), this.shadows, e.quality.level === "high" ? 3 : 2);
+    // ---- the essentials, built now: the road around the car, the car, the sky. Traffic models, the image light, the far
+    // city, trees and street furniture stream in afterwards (see `stream`), so the game opens fast.
+    this.view = new CityView(gl, this.built, this.shadows);
     root.add(this.view.group);
-    const lvl = e.quality.level;
-    this.trees = new TreeField(lvl === "high" ? 90 : lvl === "medium" ? 55 : 25, 1400, lvl === "high" ? 120 : 80, this.shadows);
-    this.skyline = new Skyline(gl.capabilities.getMaxAnisotropy());
-    this.props = new PropField(this.shadows);
-    root.add(this.trees.group, this.skyline.group, this.props.group);
-    this.mats = new CarMats(e.quality.level !== "low");
+    this.mats = new CarMats(this.lod.clearcoat);
+    this.warmCars = this.mats.warm();
     this.player = new PlayerView(this.mats, this.shadows);
     this.trafficV = new TrafficView(this.mats, 12, this.shadows);
     this.pedV = new PedView(30, this.shadows);
-    root.add(this.player.group, this.trafficV.group, this.pedV.group, this.skid.mesh, this.smoke.points);
-    this.smoke.density = Math.max(0.5, e.quality.particles);
+    root.add(this.player.group, this.trafficV.group, this.pedV.group, this.skid.mesh, this.smoke.points, this.warmCars);
     this.car = new Car(CARS[this.carId].phys);
     this.car.ground = groundYWorld;
     // spawn: the inner northbound lane of the street x = 0 (right-hand traffic: heading +z drives at x < 0)
@@ -194,15 +216,12 @@ export class PoygaGame {
       this.placePlan(ax, az, ah ?? 0);
     }
     this.setCar(this.carId);
-    for (const [kind, url] of Object.entries(TRAFFIC_GLB) as [keyof typeof TRAFFIC_GLB, string][]) {
-      void loadCar(url).then((m) => {
-        if (!this.alive || !m) return;
-        this.trafficV.setModel(kind, m);
-        this.modelsLoaded++;
-      });
-    }
-    // the first blocks synchronously
-    this.view.update(this.car.x, this.car.z, 0, 9);
+    // only the tiles under the car now; the rest of the ring is built a few per frame
+    this.view.update(this.car.x, this.car.z, 0);
+    this.view.work(0);
+    this.applyLod();
+    // (the engine's own start-up precompile builds the screen variants; with the post pipeline the game is drawn into a render target)
+    if (this.lod.post) void this.precompile(this.root);
 
     this.probe = { snapshot: () => this.snapshot() };
     (window as unknown as { __poyga?: PoygaProbe }).__poyga = this.probe;
@@ -258,11 +277,12 @@ export class PoygaGame {
     return hit;
   }
 
-  private async loadSky(gl: THREE.WebGLRenderer): Promise<void> {
-    // the background: a 4096 x 2048 photo sky (Poly Haven kloofendal_48d_partly_cloudy_puresky, CC0) converted in Blender,
-    // sharp clouds for 400 kB; lighting / reflections: the 1k HDR of the same sky
-    const bg = new THREE.TextureLoader().load("/textures/poyga/osmon_4k.jpg", (t) => {
+  private loadSky(gl: THREE.WebGLRenderer): void {
+    // the background: a photo sky (Poly Haven kloofendal_48d_partly_cloudy_puresky, CC0) converted in Blender, shipped as a
+    // 2048 x 1024 WebP (1024 x 512 on "low") for ~50 kB; lighting / reflections: the 1k HDR of the same sky (see `loadEnv`)
+    const bg = new THREE.TextureLoader().load(texUrl("/textures/poyga/osmon_4k", this.built), (t) => {
       if (!this.alive) return;
+      gl.initTexture(t);
       this.scene.background = t;
       this.scene.backgroundIntensity = 1;
       // the haze takes the colour of the sky just above the horizon, so the city melts into it without a seam
@@ -290,8 +310,32 @@ export class PoygaGame {
     });
     bg.mapping = THREE.EquirectangularReflectionMapping;
     bg.colorSpace = THREE.SRGBColorSpace;
-    bg.anisotropy = gl.capabilities.getMaxAnisotropy();
+    // (a sky needs no anisotropic filtering)
+    bg.anisotropy = 1;
     this.bgTex = bg;
+  }
+
+  /**
+   * `compileAsync` of `o` for the lights of the game and the haze / image light of `target`. The shader variant depends on where
+   * the picture goes: the post pipeline draws the game into a linear render target (no tone mapping), the screen gets ACES and
+   * sRGB. A render target is bound while the variants are chosen, so the right ones are built.
+   */
+  private async compileFor(o: THREE.Object3D, target: THREE.Scene): Promise<void> {
+    const gl = this.gl;
+    const prev = gl.getRenderTarget();
+    try {
+      if (this.lod.post) gl.setRenderTarget((this.probeRT ??= new THREE.WebGLRenderTarget(1, 1)));
+      const done = gl.compileAsync(o, this.camera, target);
+      gl.setRenderTarget(prev);
+      await done;
+    } catch {
+      /* it compiles when first drawn instead */
+      gl.setRenderTarget(prev);
+    }
+  }
+
+  /** the image light: the HDR sky turned into a reflection map (a few shaders and a GPU pass: not in the first frames) */
+  private async loadEnv(): Promise<void> {
     try {
       const { HDRLoader } = await import("three/examples/jsm/loaders/HDRLoader.js");
       const tex = await new HDRLoader().loadAsync(SKY_HDR);
@@ -300,15 +344,112 @@ export class PoygaGame {
         return;
       }
       tex.mapping = THREE.EquirectangularReflectionMapping;
-      const pm = new THREE.PMREMGenerator(gl);
+      const pm = new THREE.PMREMGenerator(this.gl);
       this.envTex = pm.fromEquirectangular(tex).texture;
       pm.dispose();
       tex.dispose();
+      // every shader changes with an image light: build the new variants first (against a stand-in scene that already has it),
+      // switch when they are ready, so no frame waits for a whole city of shaders
+      const probe = new THREE.Scene();
+      probe.environment = this.envTex;
+      probe.fog = this.scene.fog;
+      await this.compileFor(this.root, probe);
+      if (!this.alive) return;
       this.scene.environment = this.envTex;
-      this.scene.environmentIntensity = 0.6;
     } catch {
       /* no image lighting: the sun and the hemisphere light still work */
     }
+  }
+
+  /** the four traffic models (the stand-in bodies are shown until each has arrived) */
+  private loadTraffic(): void {
+    for (const [kind, url] of Object.entries(TRAFFIC_GLB) as [keyof typeof TRAFFIC_GLB, string][]) {
+      void loadCar(url).then((m) => {
+        if (!this.alive || !m) return;
+        this.trafficV.setModel(kind, m);
+        this.modelsLoaded++;
+      });
+    }
+  }
+
+  // ------------------------------------------------------------------------------------------ quality and streaming
+
+  /**
+   * Follow the quality level. Cheap and live: tile / far-city / tree / prop radius, haze and far plane, traffic and people
+   * counts, image light, tyre marks. What was decided when the scene was built (maps, clear coat, which models were fetched)
+   * stays; the controller never goes above the level the game started on.
+   */
+  private applyLod(): void {
+    const q = this.engine.quality;
+    const lvl = effectiveLevel(this.built, q.level);
+    // the emergency squeeze of the controller (below the lowest level) shortens everything a bit more
+    const sq = squeeze(q.level, q.viewDistance);
+    if (lvl === this.lodLevel && Math.abs(sq - this.lodSqueeze) < 0.005) return;
+    this.lodLevel = lvl;
+    this.lodSqueeze = sq;
+    const lod = LOD[lvl];
+    this.lod = lod;
+    const fog = this.scene.fog as THREE.Fog;
+    fog.near = lod.fogNear * sq;
+    fog.far = lod.fogFar * sq;
+    this.camera.far = fog.far * 1.04;
+    this.camera.updateProjectionMatrix();
+    this.scene.environmentIntensity = lod.env;
+    this.view.setRadius(lod.tileR);
+    this.skyline?.setLod(Math.max(1, Math.round(lod.farR * sq)), lod.towerR);
+    this.trees?.setLevel(lvl);
+    this.city.setCounts(Math.max(2, Math.round(lod.cars * sq)), Math.max(2, Math.round(lod.peds * sq)));
+  }
+
+  /**
+   * What the first picture does not need arrives afterwards, one step per frame at most: image light and traffic models, the
+   * far city and towers, trees, street furniture. Then the city around the car is queued and built a little per frame
+   * (`boost` stretches the time allowed per frame: on the loading screen nobody sees a slow frame).
+   */
+  private stream(dt: number, boost: number): void {
+    this.clock += dt;
+    if (this.stage === 0 && this.clock > 0.15) {
+      this.stage = 1;
+      void this.loadEnv();
+      this.loadTraffic();
+    } else if (this.stage === 1 && this.clock > 0.6) {
+      this.stage = 2;
+      this.skyline = new Skyline(this.gl, this.built, this.precompile);
+      this.root.add(this.skyline.group);
+      this.lodLevel = null;
+      this.applyLod();
+    } else if (this.stage === 2 && this.clock > 1.4) {
+      this.stage = 3;
+      this.trees = new TreeField(this.gl, this.built, this.shadows, this.precompile);
+      this.root.add(this.trees.group);
+      this.lodLevel = null;
+      this.applyLod();
+    } else if (this.stage === 3 && this.clock > 2.2) {
+      this.stage = 4;
+      if (LOD[this.built].propR > 0) {
+        this.props = new PropField(this.shadows, this.precompile);
+        this.root.add(this.props.group);
+      }
+    }
+    const x = this.car.x;
+    const z = this.car.z;
+    this.view.update(x, z, this.city.t);
+    this.skyline?.update(x, z);
+    this.props?.update(x, z, this.lod.propR);
+    // the time is shared nearest-first: tiles, then trees, props and the far city (each gets a little even when the tiles used it up)
+    const now = performance.now();
+    const until = now + this.lod.workMs * boost;
+    this.view.work(until);
+    this.trees?.update(dt, this.camera.position.x, this.camera.position.z, Math.max(until, now + 1));
+    this.props?.work(Math.max(until, now + 1));
+    this.skyline?.work(Math.max(until, now + 1.5));
+  }
+
+  /** Called while the engine shows its loading screen (the game frame does not run yet): builds the city meanwhile. */
+  preload(dt: number): void {
+    if (!this.alive) return;
+    this.applyLod();
+    this.stream(dt, 2.5);
   }
 
   private setCar(id: CarId): void {
@@ -373,10 +514,8 @@ export class PoygaGame {
     if (Math.abs(c.steer) < 0.07) c.steer = 0;
     if (this.phase === "garage") this.garage(dt, playing);
     else if (playing) this.drive(dt);
-    this.view.update(this.car.x, this.car.z, this.city.t, this.t < 1.5 ? 2 : 1);
-    this.skyline.update(this.car.x, this.car.z);
-    this.props.update(this.car.x, this.car.z, lvlRadius(this.engine.quality.level));
-    this.trees.update(dt, this.camera.position.x, this.camera.position.z, 4);
+    this.applyLod();
+    this.stream(dt, this.t < 3 ? 1.5 : 1);
     this.place(dt, c.steer);
     for (const m of this.msgs) m.t -= dt;
     while (this.msgs.length && this.msgs[0].t <= 0) this.msgs.shift();
@@ -421,7 +560,6 @@ export class PoygaGame {
     // the hand cursor
     this.cursor ??= new DwellController(e.config.cursor, e.config.cursorFilter, () => {}, () => e.audio.click());
     const cur = this.cursor;
-    const fistBefore = cur.fist;
     cur.updateCursor(e.players, performance.now(), W, H);
     let over: string | null = null;
     if (cur.on) for (const b of this.buttons) if (cur.x >= b.x && cur.x <= b.x + b.w && cur.y >= b.y && cur.y <= b.y + b.h) over = b.id;
@@ -429,7 +567,7 @@ export class PoygaGame {
       this.hover = over;
       this.hoverT = 0;
     } else if (over) this.hoverT += dt;
-    if (over && ((cur.fist && !fistBefore) || this.hoverT > 1.3)) {
+    if (over && this.hoverT > 1.3) {
       this.press(over);
       this.hoverT = -0.6;
     }
@@ -460,9 +598,9 @@ export class PoygaGame {
     const [cpx, cpz] = unwarp(car.x, car.z, this.planPos);
     const bi = Math.floor(cpx / PITCH);
     const bj = Math.floor(cpz / PITCH);
-    const key = `${bi},${bj}`;
-    if (key !== this.nearKey) {
-      this.nearKey = key;
+    if (bi !== this.nearI || bj !== this.nearJ) {
+      this.nearI = bi;
+      this.nearJ = bj;
       this.boxes = [];
       this.posts = [];
       for (let i = bi - 1; i <= bi + 1; i++)
@@ -471,9 +609,13 @@ export class PoygaGame {
           for (const b of pl.buildings) if (b.solid) this.boxes.push(b);
           for (const p of pl.posts) if (p.r > 0) this.posts.push(p);
         }
-      forgetFar(bi, bj, 6);
+      forgetFar(bi, bj, PLAN_KEEP);
+      this.postBuf = this.posts.slice();
+      this.postBase = this.postBuf.length;
     }
-    const posts = this.posts.slice();
+    // the static posts plus the circles of the traffic cars near the car
+    const posts = this.postBuf;
+    posts.length = this.postBase;
     for (const t of this.city.cars) if (Math.hypot(t.x - cpx, t.z - cpz) < 12) for (const [x, z, r] of carCircles(t)) posts.push({ x, z, r, kind: "tree", seed: t.id });
     const ctl = { gas: c.gas, brake: c.brake, steer: c.steer, handbrake: c.handbrake, reverse: c.reverse };
     const N = 4;
@@ -537,10 +679,13 @@ export class PoygaGame {
       const wx = car.x + lx * ox + fx * oz;
       const wz = car.z + lz * ox + fz * oz;
       const slide = braking || (front ? frontSlide : rearSlide);
-      this.skid.wheel(i, wx, car.y + 0.012, wz, fx, fz, slide);
+      this.skid.wheel(i, wx, car.y + 0.012, wz, fx, fz, slide && this.lod.skid);
       // smoke: thick from the rear in a drift / burnout, thin from all wheels when locking up
       const rate = rearSlide && !front ? 30 * Math.min(1, 0.3 + car.slipR * 2 + car.wheelspin) : frontSlide && front ? 10 : braking ? 5 : 0;
-      if (rate > 0 && Math.random() < dt * rate) this.smoke.emit(wx, car.y, wz, car.vx, car.vz);
+      if (rate > 0) {
+        this.smokeT = 1.8;
+        if (Math.random() < dt * rate) this.smoke.emit(wx, car.y, wz, car.vx, car.vz);
+      }
     }
   }
 
@@ -555,6 +700,17 @@ export class PoygaGame {
     if (this.msgs.length > 3) this.msgs.shift();
   }
 
+  /** world pose of one traffic car (false: too far to draw) */
+  private poseCar = (t: TCar, o: THREE.Object3D): boolean => {
+    const wx = warpX(t.x, t.z);
+    const wz = warpZ(t.x, t.z);
+    if (Math.hypot(wx - this.car.x, wz - this.car.z) > 330) return false;
+    warpDir(t.x, t.z, Math.sin(t.h), Math.cos(t.h), this.tw);
+    o.position.set(wx, 0, wz);
+    o.rotation.set(0, Math.atan2(this.tw[0], this.tw[1]), 0);
+    return true;
+  };
+
   /** world poses of the player, traffic, people, the camera and the sun */
   private place(dt: number, steer: number): void {
     const car = this.car;
@@ -563,23 +719,25 @@ export class PoygaGame {
     // body pitch under braking / acceleration, roll in turns
     g.rotation.set(clamp(car.aLong * 0.006, -0.05, 0.05), car.h, clamp(car.aLat * 0.007, -0.06, 0.06), "YXZ");
     this.player.update(car.vLong, steer, dt, false, this.t);
-    const tw: [number, number] = [0, 0];
-    this.trafficV.update(this.city.cars, (t, o) => {
-      const wx = warpX(t.x, t.z);
-      const wz = warpZ(t.x, t.z);
-      if (Math.hypot(wx - car.x, wz - car.z) > 330) return false;
-      warpDir(t.x, t.z, Math.sin(t.h), Math.cos(t.h), tw);
-      o.position.set(wx, 0, wz);
-      o.rotation.set(0, Math.atan2(tw[0], tw[1]), 0);
-      return true;
-    });
-    this.pedW.length = 0;
+    this.trafficV.update(this.city.cars, this.poseCar);
+    const tw = this.tw;
+    let n = 0;
     for (const p of this.city.peds) {
+      if (n >= this.pedW.length) break;
       warpDir(p.x, p.z, Math.sin(p.h), Math.cos(p.h), tw);
-      this.pedW.push({ x: warpX(p.x, p.z), z: warpZ(p.x, p.z), h: Math.atan2(tw[0], tw[1]), color: p.color, phase: p.phase });
+      const o = this.pedW[n++];
+      o.x = warpX(p.x, p.z);
+      o.z = warpZ(p.x, p.z);
+      o.h = Math.atan2(tw[0], tw[1]);
+      o.color = p.color;
+      o.phase = p.phase;
     }
-    this.pedV.update(this.pedW, 0.15);
-    this.smoke.update(dt, this.engine.stage.h);
+    this.pedV.update(this.pedW, 0.15, n);
+    // the tyre smoke is a draw call and two buffer uploads a frame: only while there is some
+    this.smoke.density = Math.max(0.25, this.engine.quality.particles);
+    this.smokeT = Math.max(0, this.smokeT - dt);
+    this.smoke.points.visible = this.smokeT > 0;
+    if (this.smokeT > 0) this.smoke.update(dt, this.engine.stage.h);
     // ---- camera: orbit in the garage, smooth chase / cockpit when driving
     const cam = this.camera;
     const driving = this.phase === "drive";
@@ -670,16 +828,16 @@ export class PoygaGame {
       const cur = this.cursor;
       if (cur?.on) {
         c.save();
-        c.fillStyle = cur.fist ? "#22d3ee" : "rgba(255,255,255,.95)";
+        c.fillStyle = "rgba(255,255,255,.95)";
         c.strokeStyle = "rgba(0,0,0,.55)";
         c.lineWidth = 2;
         c.beginPath();
-        c.arc(cur.x, cur.y, (cur.fist ? 9 : 13) * u, 0, Math.PI * 2);
+        c.arc(cur.x, cur.y, 13 * u, 0, Math.PI * 2);
         c.fill();
         c.stroke();
         c.restore();
       }
-      drawText(c, "Qo‘lni tugmaga olib boring va mushtni yuming (yoki ushlab turing) · klaviatura: ← → C Enter", W / 2, H * 0.93, 17 * u, "#fff", "center", 700);
+      drawText(c, "Qo‘lni tugmaga olib boring va bir soniya ushlab turing · klaviatura: ← → C Enter", W / 2, H * 0.93, 17 * u, "#fff", "center", 700);
       return;
     }
     const kmh = Math.round(car.speed * 3.6);
@@ -780,18 +938,23 @@ export class PoygaGame {
     if (w.__poyga === this.probe) delete w.__poyga;
     this.engine.audio.engineStop();
     this.view.dispose();
-    this.trees.dispose();
-    this.skyline.dispose();
-    this.props.dispose();
+    this.trees?.dispose();
+    this.skyline?.dispose();
+    this.props?.dispose();
     this.player.dispose();
     this.trafficV.dispose();
     this.pedV.dispose();
     this.skid.dispose();
     this.smoke.dispose();
+    this.warmCars.traverse((o) => {
+      if ((o as THREE.InstancedMesh).isInstancedMesh) (o as THREE.InstancedMesh).dispose();
+    });
     this.mats.dispose();
     disposeCarParts();
+    disposeModels();
     this.envTex?.dispose();
     this.bgTex?.dispose();
+    this.probeRT?.dispose();
     this.root.clear();
     this.gl.shadowMap.enabled = this.savedShadow;
     const s = this.scene;
@@ -808,4 +971,5 @@ export class PoygaGame {
   }
 }
 
-const lvlRadius = (l: string): number => (l === "high" ? 3 : 2);
+/** blocks of city plan kept around the car: the skyline reads up to 11 blocks out, a plan dropped and read again costs a hitch */
+const PLAN_KEEP = 12;

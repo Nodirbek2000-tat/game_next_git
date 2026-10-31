@@ -7,7 +7,8 @@ import type { Angler } from "./angler";
 import type { BaliqRig } from "./game";
 import { collectionRects, lobbyRects, optionRects } from "./layout";
 import { FOV } from "./view";
-import { TUNING } from "./rules";
+import { VOICE_PLAY_AVAILABLE } from "./playMode";
+import { clamp, TUNING } from "./rules";
 import { SPECIES } from "./species";
 import { drawFishIcon } from "./textures";
 
@@ -85,8 +86,8 @@ function hint(a: Angler, rig: BaliqRig): string {
   switch (a.state) {
     case "ready":
       if (voiceOn(rig, a)) return rig.voiceIn?.status === "loudness" ? "Ketma-ket 2–3 marta baqiring — qarmoq uchadi!" : "«Fish! Fish! Fish!» deng — qarmoq uchadi";
-      if (a.sig.armed) return "Endi oldinga siltang!";
-      return two ? `${hand} qo‘lni ko‘tarib, oldinga siltang` : `${hand} qo‘lni yelkadan yuqori ko‘taring, keyin oldinga siltang`;
+      if (a.sig.armed) return "Endi oldinga kuchli siltang!";
+      return two ? `${hand} qo‘lni ko‘tarib, oldinga siltang` : `${hand} qo‘lni yelkadan yuqori ko‘taring, keyin oldinga siltang — kuchli silkitsangiz uzoqqa uchadi`;
     case "wait":
       return two ? "Kuting… poplavokni kuzating" : `Kuting… poplavokni kuzating (qaytarish: ${reel} qo‘l bilan aylantiring)`;
     case "nibble":
@@ -95,7 +96,10 @@ function hint(a: Angler, rig: BaliqRig): string {
       if (voiceOn(rig, a)) return "HOZIR! «Pull!» deng";
       return rig.engine.kids ? "HOZIR! Ilintiraman…" : "HOZIR! Qo‘lni keskin tepaga torting!";
     case "fight":
-      if (a.fight && a.fight.pullDir !== 0 && !rig.engine.kids) return `Baliq ${a.fight.pullDir < 0 ? "chapga" : "o‘ngga"} tortyapti — qo‘lni ${a.fight.pullDir < 0 ? "o‘ngga" : "chapga"} torting!`;
+      if (a.fight && a.fight.pullDir !== 0 && !rig.engine.kids) {
+        if (a.fight.counter > 0.5) return "Yaxshi! Qo‘lni shunday ushlab turing";
+        return `Baliq ${a.fight.pullDir < 0 ? "chapga" : "o‘ngga"} tortyapti — qo‘lni ${a.fight.pullDir < 0 ? "o‘ngga" : "chapga"} suring!`;
+      }
       if (voiceOn(rig, a)) return "«Pull! Pull!» deng — baliqni tortamiz";
       return two ? `${reel[0].toUpperCase()}${reel.slice(1)} qo‘l — doira, ${hand} qo‘l — torting` : `${reel[0].toUpperCase()}${reel.slice(1)} qo‘l bilan doira chizing · ${hand} qo‘l bilan torting · Qizilda to‘xtang!`;
     default:
@@ -109,6 +113,41 @@ function voiceOn(rig: BaliqRig, a: Angler): boolean {
 }
 
 const REACT: Record<string, string> = { wait: "", nibble: "👀", bite: "😮", fight: "😤", show: "😄" };
+
+/**
+ * Which way the fish pulls and how hard (red bar from the middle), and where the rod hand is (dot; green while it counters the
+ * pull). To calm the fish the dot goes to the other side of the bar. Kids see only the fish's pull.
+ */
+function drawPullCue(c: CanvasRenderingContext2D, a: Angler, f: NonNullable<Angler["fight"]>, cx: number, y: number, two: boolean, kids: boolean): void {
+  const hw = two ? 80 : 120;
+  panel(c, cx - hw - 16, y - 16, hw * 2 + 32, 32, 16, "rgba(0,0,0,.4)");
+  c.save();
+  c.fillStyle = "rgba(255,255,255,.25)";
+  c.fillRect(cx - hw, y - 2, hw * 2, 4);
+  c.fillRect(cx - 1.5, y - 10, 3, 20);
+  if (f.run && f.runDir !== 0 && f.surge > 0.03) {
+    const len = hw * clamp(f.surge, 0, 1);
+    const d = f.runDir;
+    c.fillStyle = "#ff5a4a";
+    c.fillRect(d > 0 ? cx : cx - len, y - 6, len, 12);
+    c.beginPath();
+    c.moveTo(cx + d * (len + 12), y);
+    c.lineTo(cx + d * len, y - 11);
+    c.lineTo(cx + d * len, y + 11);
+    c.closePath();
+    c.fill();
+  }
+  if (!kids) {
+    c.fillStyle = f.counter > 0.5 ? "#34d399" : "#ffffff";
+    c.strokeStyle = "rgba(0,0,0,.55)";
+    c.lineWidth = 2;
+    c.beginPath();
+    c.arc(cx + clamp(a.steer, -1, 1) * hw, y, 8, 0, TAU);
+    c.fill();
+    c.stroke();
+  }
+  c.restore();
+}
 
 function drawAngler(rig: BaliqRig, c: CanvasRenderingContext2D, a: Angler, now: number): void {
   const { w, h } = rig.ui;
@@ -199,7 +238,8 @@ function drawAngler(rig: BaliqRig, c: CanvasRenderingContext2D, a: Angler, now: 
     c.restore();
     drawText(c, "G‘altak", rx, ry + rr + 22, 13, "#fff");
     if (f.run) drawText(c, f.pullDir === 0 ? "Baliq tortyapti!" : f.pullDir < 0 ? "◀ Baliq chapga tortyapti!" : "Baliq o‘ngga tortyapti! ▶", cx, h * 0.3, two ? 20 : 26, "#ff8a80");
-    if (f.jumpT > 0) drawText(c, "Sakradi!", cx, h * 0.36, 22, "#9fe8ff");
+    if (f.run || !rig.engine.kids) drawPullCue(c, a, f, cx, h * 0.345, two, rig.engine.kids);
+    if (f.jumpT > 0) drawText(c, "Sakradi!", cx, h * 0.41, 22, "#9fe8ff");
   }
 
   // caught card
@@ -246,6 +286,33 @@ function drawAngler(rig: BaliqRig, c: CanvasRenderingContext2D, a: Angler, now: 
   }
 }
 
+/** The two play modes: silent (selected, the only one that works now) and voice ("Tez orada", not selectable). */
+function drawModeCards(rig: BaliqRig, c: CanvasRenderingContext2D): void {
+  const [silent, voice] = optionRects(rig.ui.w, rig.ui.h).modes;
+  panel(c, silent.x, silent.y, silent.w, silent.h, 18, "rgba(30,110,85,.55)", "#34d399");
+  drawText(c, "✓ Ovozsiz o‘ynash", silent.x + silent.w / 2, silent.y + 28, 22, "#b8ffd8");
+  c.save();
+  c.font = "600 14px system-ui, sans-serif";
+  c.fillStyle = "#dfeff6";
+  c.textAlign = "center";
+  wrap(c, "Qo‘l harakatlari bilan o‘ynaysiz: siltang, torting, aylantiring. Mikrofon kerak emas.", silent.w - 36).forEach((l, i) => c.fillText(l, silent.x + silent.w / 2, silent.y + 56 + i * 19));
+  c.restore();
+  panel(c, voice.x, voice.y, voice.w, voice.h, 18, "rgba(14,40,58,.6)", "rgba(255,255,255,.18)");
+  c.save();
+  c.globalAlpha = 0.6;
+  drawText(c, "Ovoz bilan o‘ynash", voice.x + voice.w / 2, voice.y + 28, 22, "#fff");
+  c.restore();
+  panel(c, voice.x + voice.w / 2 - 50, voice.y + 48, 100, 28, 14, "rgba(255,200,60,.9)");
+  drawText(c, "Tez orada", voice.x + voice.w / 2, voice.y + 62, 16, "#3a2a00");
+  c.save();
+  c.globalAlpha = 0.6;
+  c.font = "600 14px system-ui, sans-serif";
+  c.fillStyle = "#dfeff6";
+  c.textAlign = "center";
+  wrap(c, "Ovoz buyruqlari bilan o‘ynash keyinroq qo‘shiladi.", voice.w - 36).forEach((l, i) => c.fillText(l, voice.x + voice.w / 2, voice.y + 96 + i * 19));
+  c.restore();
+}
+
 function drawOptions(rig: BaliqRig, c: CanvasRenderingContext2D, now: number): void {
   const { w, h } = rig.ui;
   const r = optionRects(w, h);
@@ -260,10 +327,12 @@ function drawOptions(rig: BaliqRig, c: CanvasRenderingContext2D, now: number): v
   c.font = "700 16px system-ui, sans-serif";
   c.fillStyle = "#dfeff6";
   c.textAlign = "center";
-  const lines = ["O‘ng qo‘lni ko‘tarib oldinga siltang — qarmoq uchadi (kuch = masofa)", "Poplavok cho‘ksa — qo‘lni tepaga torting", "Chap qo‘l bilan havoda doira chizing — g‘altak aylanadi", "Strelkalar ← → : qarash · A / D : nishon · E R F : klaviatura"];
+  const lines = ["O‘ng qo‘lni ko‘tarib, kuchli oldinga siltang — qarmoq uchadi (kuch = masofa)", "Poplavok cho‘ksa — qo‘lni tepaga torting · baliq yonga tortsa — qo‘lni qarshi tomonga suring", "Chap qo‘l bilan havoda doira chizing — g‘altak aylanadi", "Strelkalar ← → : qarash · A / D : nishon · E R F : klaviatura"];
   lines.forEach((l, i) => c.fillText(l, w / 2, h * 0.285 + i * 24));
   c.restore();
-  if (rig.voiceOffered) {
+  if (!VOICE_PLAY_AVAILABLE) {
+    drawModeCards(rig, c);
+  } else if (rig.voiceOffered) {
     const on = rig.voiceWanted;
     const hov = rig.ui.hover === 0;
     panel(c, r.voice.x, r.voice.y, r.voice.w, r.voice.h, 18, hov ? "rgba(40,120,170,.85)" : "rgba(14,40,58,.9)", on ? "#34d399" : "rgba(255,255,255,.3)");

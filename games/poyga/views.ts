@@ -296,8 +296,9 @@ export class PedView {
     this.mats.push(clothMat, restMat);
   }
 
-  update(peds: readonly PedLike[], y: number): void {
-    const n = Math.min(peds.length, this.cap);
+  /** the first `count` entries of `peds` are drawn (the list may be a longer pool) */
+  update(peds: readonly PedLike[], y: number, count = peds.length): void {
+    const n = Math.min(count, peds.length, this.cap);
     for (let i = 0; i < n; i++) {
       const p = peds[i];
       this.o.position.set(p.x, y + Math.abs(Math.sin(p.phase * Math.PI)) * 0.04, p.z);

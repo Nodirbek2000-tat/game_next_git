@@ -1,3 +1,4 @@
+import type { QualityLevel } from "@/engine/types";
 import type { Phys } from "./carSim";
 import type { WheelLayout } from "./views";
 
@@ -51,3 +52,76 @@ export const TRAFFIC_GLB: Record<"sedan" | "krossover" | "van" | "truck", string
 };
 
 export const SKY_HDR = "/textures/poyga/osmon.hdr";
+
+// ---------------------------------------------------------------------------------------------------- quality levels
+
+/**
+ * What each quality level costs, in one table ("high" is the full look, "low" the lite mode for integrated GPUs).
+ * Whatever is live (radius, counts, fog, post effects) follows the quality controller while playing; what is decided when
+ * the scene is built (maps, clearcoat, which GLBs are loaded) uses the level the game started on, and the controller never
+ * goes above it.
+ */
+export interface Lod {
+  /** engine/quality/controller.ts BASE.viewDistance of this level: the live viewDistance / this = the emergency squeeze */
+  vd: number;
+  /** blocks around the car drawn in detail: (2r + 1)^2 tiles */
+  tileR: number;
+  /** far city: 3 x 3 block chunks of plain boxes around the car */
+  farR: number;
+  /** skyline tower models within this many blocks, 0 = the towers are plain boxes (no tower GLBs are loaded) */
+  towerR: number;
+  /** haze (m); the camera far plane follows the haze end */
+  fogNear: number;
+  fogFar: number;
+  /** trees: blocks gathered, real 3D models (nearest N, within the distance), impostor billboards (cap per kind); 0 models = no tree GLBs */
+  treeR: number;
+  treeNear: number;
+  treeNearDist: number;
+  treeFar: number;
+  /** street furniture (benches, hydrants, shrubs...) within this many blocks, 0 = none (no prop GLBs are loaded) */
+  propR: number;
+  /** traffic cars and pedestrians alive around the player */
+  cars: number;
+  peds: number;
+  /** texture anisotropy cap */
+  aniso: number;
+  /** normal + roughness maps on asphalt, pavement, grass, concrete */
+  pbrMaps: boolean;
+  /** clear coat on the player's paint */
+  clearcoat: boolean;
+  /** tyre marks on the road */
+  skid: boolean;
+  /** image light strength (scene.environmentIntensity: the per-material envMapIntensity is ignored when the light comes from scene.environment) */
+  env: number;
+  /** post effects (ambient occlusion, bloom, colour grade, vignette, SMAA): an extra full-screen pipeline, high only; without it the renderer's own tone mapping is used */
+  post: boolean;
+  /** milliseconds per frame the game may spend building tiles, far chunks, tree lists */
+  workMs: number;
+}
+
+export const LOD: Record<QualityLevel, Lod> = {
+  high: {
+    vd: 1, tileR: 3, farR: 3, towerR: 11, fogNear: 160, fogFar: 1600, treeR: 4, treeNear: 90, treeNearDist: 120, treeFar: 1400, propR: 3,
+    cars: 9, peds: 26, aniso: 8, pbrMaps: true, clearcoat: true, skid: true, env: 0.6, post: true, workMs: 6,
+  },
+  medium: {
+    vd: 0.75, tileR: 2, farR: 3, towerR: 6, fogNear: 160, fogFar: 1100, treeR: 3, treeNear: 40, treeNearDist: 80, treeFar: 700, propR: 2,
+    cars: 7, peds: 16, aniso: 4, pbrMaps: true, clearcoat: false, skid: true, env: 0.6, post: false, workMs: 5,
+  },
+  low: {
+    vd: 0.5, tileR: 1, farR: 2, towerR: 0, fogNear: 120, fogFar: 650, treeR: 2, treeNear: 0, treeNearDist: 0, treeFar: 300, propR: 0,
+    cars: 4, peds: 6, aniso: 2, pbrMaps: false, clearcoat: false, skid: false, env: 0.6, post: false, workMs: 4,
+  },
+};
+
+const ORDER: QualityLevel[] = ["low", "medium", "high"];
+
+/** The level the scene can show now: the current quality, but never above what it was built for. */
+export function effectiveLevel(built: QualityLevel, current: QualityLevel): QualityLevel {
+  return ORDER[Math.min(ORDER.indexOf(built), ORDER.indexOf(current))];
+}
+
+/** 0..1: how far the controller's emergency squeeze has shortened the view on top of the level (1 = not at all). */
+export function squeeze(level: QualityLevel, viewDistance: number): number {
+  return Math.min(1, Math.max(0.3, viewDistance / LOD[level].vd));
+}

@@ -1,81 +1,84 @@
 import * as THREE from "three";
-import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { TRAFFIC_GLB } from "@/games/poyga/config";
+import { loadCar, type CarMats } from "@/games/poyga/models";
+import { TrafficView, type TrafficLike } from "@/games/poyga/views";
 import type { AiCar, AiType } from "../traffic/sim";
 import type { Ped } from "../traffic/peds";
 import type { LightColor } from "../logic/signals";
 import type { Layout, Light } from "../world/layout";
 import { bridgeDeckY } from "../world/layout";
-import { carParts, type CarKind } from "./carModel";
 import { GeoBuilder } from "./geo";
 import type { Mats } from "./materials";
 
 const _o = new THREE.Object3D();
 const _c = new THREE.Color();
 
-function trafficGeo(kind: CarKind): { paint: THREE.BufferGeometry; body: THREE.BufferGeometry } {
-  const p = carParts(kind);
-  const wheels: THREE.BufferGeometry[] = p.wheelPos.map(([x, y, z]) => p.wheel.clone().translate(x, y, z));
-  // merge needs the same attribute set: the parts all have position/normal/color/uv
-  const body = mergeGeometries([p.trim.clone(), p.lamps.clone(), ...wheels])!;
-  return { paint: p.paint.clone(), body };
+/**
+ * All AI cars: the four traffic bodies of Shahar simulyatori (the same GLB files and the same instanced view: per kind one mesh
+ * per material role, paint tinted per car, tail lamps flaring when braking, a soft contact shadow). The procedural low-poly
+ * bodies stand in until a model has arrived.
+ */
+interface CarPose extends TrafficLike {
+  x: number;
+  y: number;
+  z: number;
+  h: number;
 }
 
-/** All AI cars as instanced meshes: per car type one paint mesh (tinted per instance) and one body mesh (glass, lights, wheels). */
+const poseOf = (c: TrafficLike, o: THREE.Object3D): boolean => {
+  const p = c as CarPose;
+  o.position.set(p.x, p.y, p.z);
+  o.rotation.set(0, p.h, 0);
+  return true;
+};
+
 export class TrafficRenderer {
   readonly group = new THREE.Group();
-  private meshes = new Map<AiType, { paint: THREE.InstancedMesh; body: THREE.InstancedMesh }>();
-  private geos: THREE.BufferGeometry[] = [];
-  private counts = new Map<AiType, number>();
+  private view: TrafficView;
+  /** what TrafficView reads from a car: the pool is reused every frame, `active` is its first n entries */
+  private pool: CarPose[] = [];
+  private active: CarPose[] = [];
+  private alive = true;
 
   constructor(
-    mats: Mats,
+    mats: CarMats,
     private L: Layout,
     cap = 14,
   ) {
-    for (const ty of ["sedan", "krossover", "truck", "van"] as AiType[]) {
-      const g = trafficGeo(ty);
-      this.geos.push(g.paint, g.body);
-      const paint = new THREE.InstancedMesh(g.paint, mats.trafficPaint, cap);
-      const body = new THREE.InstancedMesh(g.body, mats.trim, cap);
-      for (const m of [paint, body]) {
-        m.count = 0;
-        m.frustumCulled = false;
-        m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-        this.group.add(m);
-      }
-      paint.setColorAt(0, _c.set(0xffffff));
-      this.meshes.set(ty, { paint, body });
+    this.view = new TrafficView(mats, cap, false);
+    this.group.add(this.view.group);
+    for (const [kind, url] of Object.entries(TRAFFIC_GLB) as [AiType, string][]) {
+      void loadCar(url).then((m) => {
+        if (this.alive && m) this.view.setModel(kind, m);
+      });
     }
   }
 
   update(cars: AiCar[]): void {
-    this.counts.clear();
-    for (const c of cars) {
-      const m = this.meshes.get(c.type)!;
-      const i = this.counts.get(c.type) ?? 0;
-      if (i >= m.paint.instanceMatrix.count) continue;
-      this.counts.set(c.type, i + 1);
-      _o.position.set(c.x, bridgeDeckY(this.L, c.x, c.z), c.z);
-      _o.rotation.set(0, Math.atan2(c.fx, c.fz), 0);
-      _o.updateMatrix();
-      m.paint.setMatrixAt(i, _o.matrix);
-      m.body.setMatrixAt(i, _o.matrix);
-      m.paint.setColorAt(i, _c.setHex(c.color));
+    const n = cars.length;
+    while (this.pool.length < n) this.pool.push({ kind: "sedan", color: 0, braking: false, len: 4.4, width: 1.8, x: 0, y: 0, z: 0, h: 0 });
+    this.active.length = n;
+    for (let i = 0; i < n; i++) {
+      const c = cars[i];
+      const t = this.pool[i];
+      this.active[i] = t;
+      t.kind = c.type;
+      t.color = c.color;
+      t.len = c.len;
+      t.width = c.type === "truck" ? 2.5 : c.type === "van" ? 1.95 : 1.85;
+      // brake lights: slower than it wants to be, or held at a stop line
+      t.braking = c.v < c.vDes - 1 || c.waitT > 0;
+      t.x = c.x;
+      t.y = bridgeDeckY(this.L, c.x, c.z);
+      t.z = c.z;
+      t.h = Math.atan2(c.fx, c.fz);
     }
-    for (const [ty, m] of this.meshes) {
-      const n = this.counts.get(ty) ?? 0;
-      m.paint.count = m.body.count = n;
-      m.paint.instanceMatrix.needsUpdate = m.body.instanceMatrix.needsUpdate = true;
-      if (m.paint.instanceColor) m.paint.instanceColor.needsUpdate = true;
-    }
+    this.view.update(this.active, poseOf);
   }
 
   dispose(): void {
-    for (const g of this.geos) g.dispose();
-    for (const m of this.meshes.values()) {
-      m.paint.dispose();
-      m.body.dispose();
-    }
+    this.alive = false;
+    this.view.dispose();
   }
 }
 

@@ -11,6 +11,7 @@ import { Fx2D, drawSkeleton, drawText } from "../fx/fx2d";
 import { clamp } from "../math";
 import { QualityController } from "../quality/controller";
 import { detectDevice, resolveInitialLevel, resolvePoseModel, type DeviceProfile } from "../quality/gpu";
+import { lowerLevel, readLevelCap, writeLevelCap } from "../quality/levelCap";
 import { readBest, snapshotSettings, useSettings, writeBest } from "../settings/store";
 import { Detector, type DetectOptions, type Delegate } from "../tracking/detector";
 import { LowLightController, applyLut, buildLut, confidenceFor, lightStats } from "../tracking/lowLight";
@@ -476,7 +477,10 @@ export class EngineRuntime implements EngineApi {
     const s = snapshotSettings();
     const resolved = resolveInitialLevel(s.quality, device);
     // crowd games draw 2D only: start on the cheapest level so a weak CPU lowers the detection rate first when it struggles
-    const level = this.crowd ? "low" : resolved.level;
+    // a device that had to drop a level in this game starts there next time instead of stuttering down to it again
+    const slug = this.module.meta.slug;
+    const cap = s.quality === "auto" && !this.crowd ? readLevelCap(slug, device.gpu, Date.now()) : null;
+    const level = this.crowd ? "low" : lowerLevel(resolved.level, cap);
     const adaptive = this.crowd ? true : resolved.adaptive;
     this.renderCap = device.isMobile ? 30 : 60;
     this.fpsEma = this.renderCap;
@@ -484,6 +488,7 @@ export class EngineRuntime implements EngineApi {
     this.quality = this.qc.params;
     this.applyFxDpr();
     this.qc.onChange = (p) => {
+      if (adaptive && !this.crowd && p.level !== this.quality.level) writeLevelCap(slug, device.gpu, p.level, Date.now());
       this.quality = p;
       this.fx.density = p.particles;
       this.applyFxDpr();
@@ -998,7 +1003,8 @@ export class EngineRuntime implements EngineApi {
   /** Called by the SceneHost once the game scene is mounted and its shaders are compiled. */
   sceneReady(): void {
     if (this._state !== "preparing") return;
-    this.qc.hold(performance.now() / 1000 + 1.5);
+    // games keep streaming models and compiling shaders right after they start: those hitches are not a reason to drop quality
+    this.qc.hold(performance.now() / 1000 + 4);
     this.setState("countdown");
   }
 

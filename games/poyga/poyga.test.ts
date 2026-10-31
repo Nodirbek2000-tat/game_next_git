@@ -214,3 +214,101 @@ describe("the bent world", () => {
     expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(5);
   });
 });
+
+describe("quality levels", () => {
+  it("every number gets cheaper from high to low", async () => {
+    const { LOD, effectiveLevel, squeeze } = await import("./config");
+    const keys = ["tileR", "farR", "towerR", "fogFar", "treeR", "treeNear", "treeFar", "propR", "cars", "peds", "aniso", "workMs"] as const;
+    for (const k of keys) {
+      expect(LOD.high[k]).toBeGreaterThanOrEqual(LOD.medium[k]);
+      expect(LOD.medium[k]).toBeGreaterThanOrEqual(LOD.low[k]);
+    }
+    // the lite level loads no tower, tree or prop models
+    expect(LOD.low.towerR).toBe(0);
+    expect(LOD.low.treeNear).toBe(0);
+    expect(LOD.low.propR).toBe(0);
+    // the post pipeline (ambient occlusion and the rest) is high only
+    expect(LOD.low.post).toBe(false);
+    expect(LOD.medium.post).toBe(false);
+    expect(LOD.high.post).toBe(true);
+    // never above the level the scene was built for
+    expect(effectiveLevel("low", "high")).toBe("low");
+    expect(effectiveLevel("high", "medium")).toBe("medium");
+    // the controller's emergency squeeze shortens the view; no squeeze = 1
+    expect(squeeze("low", 0.5)).toBe(1);
+    expect(squeeze("low", 0.375)).toBeCloseTo(0.75, 5);
+  });
+
+  it("traffic counts change while it runs", () => {
+    const city = new City(8, 10, 3);
+    for (let k = 0; k < 120; k++) city.step(1 / 60, 60, 60, { x: 0, z: 0 });
+    city.setCounts(3, 4);
+    expect(city.cars.length).toBe(3);
+    expect(city.peds.length).toBe(4);
+    for (let k = 0; k < 120; k++) city.step(1 / 60, 60, 60, { x: 0, z: 0 });
+    expect(city.cars.length).toBe(3);
+    city.setCounts(6, 8);
+    for (let k = 0; k < 120; k++) city.step(1 / 60, 60, 60, { x: 0, z: 0 });
+    expect(city.cars.length).toBe(6);
+    expect(city.peds.length).toBe(8);
+  });
+});
+
+describe("streaming", () => {
+  // a renderer that is just enough for the constructors (no WebGL in the tests)
+  const fakeGl = { capabilities: { getMaxAnisotropy: () => 16 }, initTexture: () => {} } as unknown as import("three").WebGLRenderer;
+  const stubCanvas = () => {
+    const ctx = new Proxy({}, { get: (_t, k) => (k === "createImageData" ? (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }) : () => {}) });
+    (HTMLCanvasElement.prototype as unknown as { getContext: () => unknown }).getContext = () => ctx;
+  };
+
+  it("city tiles are queued, the ones under the car first, the rest within a time budget", async () => {
+    stubCanvas();
+    const { CityView } = await import("./cityView");
+    const view = new CityView(fakeGl, "high", false);
+    view.update(-1.75, 46, 0);
+    expect(view.count).toBe(0);
+    expect(view.pending).toBe(49);
+    view.work(0);
+    // only what the car stands on / touches (the road under it)
+    expect(view.count).toBeGreaterThanOrEqual(1);
+    expect(view.count).toBeLessThanOrEqual(3);
+    // a time budget in the past builds nothing more
+    const had = view.count;
+    view.work(performance.now() - 1);
+    expect(view.count).toBe(had);
+    // a budget in the future finishes the ring
+    view.work(performance.now() + 1e6);
+    expect(view.count).toBe(49);
+    expect(view.pending).toBe(0);
+    // a smaller radius (the controller stepped down) drops the far tiles at the next update
+    view.setRadius(1);
+    view.update(-1.75, 46, 0.2);
+    expect(view.count).toBeLessThanOrEqual(25);
+    view.work(performance.now() + 1e6);
+    expect(view.count).toBeLessThanOrEqual(25);
+    expect(view.pending).toBe(0);
+    view.dispose();
+  });
+
+  it("the far city is built chunk by chunk, plain boxes stand in for the towers on the lite level", async () => {
+    const { Skyline } = await import("./skyline");
+    const pre = async () => {};
+    const sky = new Skyline(fakeGl, "low", pre);
+    // the first update builds nothing: the work is queued
+    sky.update(0, 0);
+    expect(sky.chunks).toBe(0);
+    sky.work(performance.now() + 1e6);
+    // low: 2 chunks around the car in each direction = 5 x 5
+    expect(sky.chunks).toBe(25);
+    sky.setLod(1, 0);
+    sky.update(0, 0);
+    expect(sky.chunks).toBe(9);
+    sky.dispose();
+    const high = new Skyline(fakeGl, "high", pre);
+    high.update(0, 0);
+    high.work(performance.now() + 1e6);
+    expect(high.chunks).toBe(49);
+    high.dispose();
+  });
+});

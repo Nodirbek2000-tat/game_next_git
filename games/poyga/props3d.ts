@@ -1,5 +1,7 @@
 import * as THREE from "three";
+import { newGltfLoader } from "@/engine/quality/assetUrl";
 import { CURB_H, HW, PITCH, blockKind, distToPath, ihash, inPond, plan, unwarp, warpX, warpZ } from "./city";
+import { type Precompile, disposeMaterial } from "./models";
 
 /**
  * Street furniture from Poly Haven (CC0, prepared by tools/blender/props.py): benches, hydrants, manhole covers,
@@ -103,18 +105,28 @@ export function propsOf(i: number, j: number): Record<PropName, Place[]> {
 export class PropField {
   readonly group = new THREE.Group();
   private meshes = new Map<PropName, THREE.InstancedMesh[]>();
-  private key = "";
+  /** the placements of every block read so far (a block is generated once) */
+  private blocks = new Map<string, Record<PropName, Place[]>>();
+  private bi = 0;
+  private bj = 0;
+  private radius = 0;
+  private dirty = true;
   private o = new THREE.Object3D();
   private alive = true;
   private owned: { dispose(): void }[] = [];
+  private materials: THREE.Material[] = [];
 
-  constructor(private shadows: boolean) {
-    void this.load();
+  /** `precompile`: shaders are compiled before a prop is shown. With `load` false no model is fetched (the field stays empty). */
+  constructor(
+    private shadows: boolean,
+    private precompile: Precompile,
+    load = true,
+  ) {
+    if (load) void this.load();
   }
 
   private async load(): Promise<void> {
-    const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
-    const loader = new GLTFLoader();
+    const loader = await newGltfLoader();
     for (const name of Object.keys(CAPS) as PropName[]) {
       try {
         const g = await loader.loadAsync(`/models/poyga/props/${name}.glb`);
@@ -136,29 +148,63 @@ export class PropField {
           im.castShadow = this.shadows && name !== "water_manhole_cover";
           im.receiveShadow = true;
           im.frustumCulled = false;
-          this.owned.push(geo, mat);
+          this.owned.push(geo);
+          this.materials.push(mat);
           list.push(im);
-          this.group.add(im);
         });
+        // compile before the prop is shown: one model per load, so the compiles are spread out too
+        await Promise.all(list.map((im) => this.precompile(im)));
+        if (!this.alive) return;
+        for (const im of list) this.group.add(im);
         this.meshes.set(name, list);
+        this.dirty = true;
       } catch {
         /* a missing prop is skipped */
       }
     }
-    this.key = "";
   }
 
-  update(wx: number, wz: number, radius = 2): void {
+  /** the placements of one block (generated once) */
+  private block(i: number, j: number): Record<PropName, Place[]> {
+    const k = `${i},${j}`;
+    let b = this.blocks.get(k);
+    if (!b) {
+      b = propsOf(i, j);
+      this.blocks.set(k, b);
+    }
+    return b;
+  }
+
+  /** The car's world position and how many blocks around it get props (0 = none: the field is hidden). */
+  update(wx: number, wz: number, radius: number): void {
     const [x, z] = unwarp(wx, wz);
     const bi = Math.floor(x / PITCH);
     const bj = Math.floor(z / PITCH);
-    const key = `${bi},${bj},${this.meshes.size}`;
-    if (key === this.key) return;
-    this.key = key;
+    if (bi !== this.bi || bj !== this.bj || radius !== this.radius) {
+      this.bi = bi;
+      this.bj = bj;
+      this.radius = radius;
+      this.dirty = true;
+    }
+    this.group.visible = radius > 0;
+  }
+
+  /** Read the missing blocks (until `until`, a performance.now() time; at least one) and, once all are there, lay out the instances. */
+  work(until: number): void {
+    if (!this.dirty || this.radius <= 0 || this.meshes.size === 0) return;
+    const { bi, bj, radius } = this;
+    let read = 0;
+    for (let i = bi - radius; i <= bi + radius; i++)
+      for (let j = bj - radius; j <= bj + radius; j++) {
+        if (this.blocks.has(`${i},${j}`)) continue;
+        if (read > 0 && performance.now() >= until) return;
+        read++;
+        this.block(i, j);
+      }
     const n = new Map<PropName, number>();
     for (let i = bi - radius; i <= bi + radius; i++)
       for (let j = bj - radius; j <= bj + radius; j++) {
-        const pl = propsOf(i, j);
+        const pl = this.block(i, j);
         for (const name of Object.keys(pl) as PropName[]) {
           const list = this.meshes.get(name);
           if (!list) continue;
@@ -179,11 +225,17 @@ export class PropField {
         im.count = n.get(name) ?? 0;
         im.instanceMatrix.needsUpdate = true;
       }
+    for (const k of this.blocks.keys()) {
+      const [i, j] = k.split(",").map(Number);
+      if (Math.abs(i - bi) > radius + 2 || Math.abs(j - bj) > radius + 2) this.blocks.delete(k);
+    }
+    this.dirty = false;
   }
 
   dispose(): void {
     this.alive = false;
     for (const list of this.meshes.values()) for (const im of list) im.dispose();
     for (const x of this.owned) x.dispose();
+    for (const m of this.materials) disposeMaterial(m);
   }
 }

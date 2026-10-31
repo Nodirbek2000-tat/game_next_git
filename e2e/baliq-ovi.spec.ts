@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { BLUE, RED, eng, errorsOf, handsUp, installFakeMic, installFakeRecognizer, openGame, setPilot, snap, standing, startPilot, waitSnap, waitState } from "./baliq-helpers";
 import { installFake, setPeople } from "./fixtures";
+import { VOICE_PLAY_AVAILABLE } from "../games/baliq-ovi/playMode";
 
 // Baliq ovi e2e (see baliq-helpers.ts for the autopilot). Headless software GL renders only a few frames per second and the
 // game clock advances at most 50 ms per frame, so game time runs slower than real time: everything polls generously, and
@@ -277,6 +278,7 @@ test.describe("Baliq ovi: first person and kids voice", () => {
   });
 
   test("kids voice: options screen (default ON), on-device recogniser only, fish casts, the game strikes for the child, pull reels", async ({ page }) => {
+    test.skip(!VOICE_PLAY_AVAILABLE, "voice play is switched off (games/baliq-ovi/playMode.ts)");
     test.setTimeout(600_000);
     const problems = errorsOf(page);
     await openGame(page, `opts=1&duration=600&fish=forel&${GAME}`, [standing()], { kids: true, ...SENS }, installFakeRecognizer);
@@ -308,12 +310,17 @@ test.describe("Baliq ovi: first person and kids voice", () => {
     expect(problems).toEqual([]);
   });
 
-  test("voice option: off by default for adults, then no recogniser and no microphone is ever started", async ({ page }) => {
+  test("play modes: silent is the working mode, voice is not selectable (even with ?voice=1 or the V key), no recogniser is ever started", async ({ page }) => {
+    test.skip(VOICE_PLAY_AVAILABLE, "the options screen differs while the voice mode is on");
     test.setTimeout(300_000);
-    await openGame(page, `opts=1&duration=600&${GAME}`, [standing()], { ...SENS }, installFakeRecognizer);
+    await openGame(page, `opts=1&voice=1&duration=600&${GAME}`, [standing()], { ...SENS }, installFakeRecognizer);
     const s0 = await snap(page);
     expect(s0.phase).toBe("options");
+    expect(s0.voice.offered).toBe(false);
     expect(s0.voice.wanted).toBe(false);
+    await page.keyboard.press("v");
+    await page.waitForTimeout(500);
+    expect((await snap(page)).voice.wanted).toBe(false);
     await hold(page, "Enter", "s.phase === 'play'");
     await page.waitForTimeout(1500);
     const s1 = await snap(page);
@@ -321,7 +328,20 @@ test.describe("Baliq ovi: first person and kids voice", () => {
     expect(await page.evaluate(() => (window as any).__sr.starts)).toBe(0);
   });
 
+  test("play modes (kids): the microphone is never asked, whatever the link or the saved choice says", async ({ page }) => {
+    test.skip(VOICE_PLAY_AVAILABLE, "the options screen differs while the voice mode is on");
+    test.setTimeout(300_000);
+    await page.addInitScript(() => localStorage.setItem("harakat.baliq-ovi.voice", "1"));
+    await openGame(page, `opts=1&voice=1&duration=600&${GAME}`, [standing()], { kids: true, ...SENS }, installFakeMic);
+    expect((await snap(page)).voice.wanted).toBe(false);
+    await hold(page, "Enter", "s.phase === 'play'");
+    await page.waitForTimeout(2000);
+    expect((await snap(page)).voice.status).toBe("off");
+    expect(await page.evaluate(() => (window as any).__mic.asked)).toBe(0);
+  });
+
   test("kids voice without a recogniser: the loudness detector - repeated shouts cast, the microphone is asked only now", async ({ page }) => {
+    test.skip(!VOICE_PLAY_AVAILABLE, "voice play is switched off (games/baliq-ovi/playMode.ts)");
     test.setTimeout(400_000);
     const problems = errorsOf(page);
     await openGame(page, `opts=1&duration=600&fish=forel&${GAME}`, [standing()], { kids: true, ...SENS }, installFakeMic);

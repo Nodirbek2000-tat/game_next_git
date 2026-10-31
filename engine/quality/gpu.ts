@@ -19,7 +19,7 @@ export interface DeviceProfile {
 }
 
 /** integrated GPUs share memory bandwidth with the camera, the models and the compositor: "high" is never a good start there */
-const INTEGRATED_GPU = /intel|uhd|iris|radeon(tm) graphics|vega d+ graphics|adreno|mali|powervr|apple gpu/i;
+const INTEGRATED_GPU = /intel|uhd|iris|radeon\(tm\) graphics|vega \d+ graphics|adreno|mali|powervr|apple gpu/i;
 const SOFTWARE_GPU = /swiftshader|llvmpipe|software|basic render|softpipe/i;
 
 /** Phone / tablet (also iPadOS that pretends to be a Mac). */

@@ -35,12 +35,21 @@ export function collectionRects(w: number, h: number): { cards: Rect[]; info: Re
   return { cards, info, button };
 }
 
-/** Pre-start options (one player): the voice switch and the start button. */
-export function optionRects(w: number, h: number): { voice: Rect; start: Rect; panel: Rect } {
+/**
+ * Pre-start options (one player): the two play modes side by side ("Ovozsiz" selected, "Ovoz bilan" not yet available), the
+ * voice switch panel (used only while the voice mode is on: it takes the place of the two cards) and the start button.
+ */
+export function optionRects(w: number, h: number): { voice: Rect; modes: [Rect, Rect]; start: Rect; panel: Rect } {
   const pw = Math.min(w * 0.62, 760);
   const px = w / 2 - pw / 2;
   const panel = { x: px, y: h * 0.08, w: pw, h: h * 0.84 };
   const voice = { x: px + 24, y: h * 0.42, w: pw - 48, h: Math.min(h * 0.2, 130) };
+  const gap = 16;
+  const mw = (voice.w - gap) / 2;
+  const modes: [Rect, Rect] = [
+    { x: voice.x, y: voice.y, w: mw, h: voice.h },
+    { x: voice.x + mw + gap, y: voice.y, w: mw, h: voice.h },
+  ];
   const start = { x: w / 2 - 150, y: h * 0.78, w: 300, h: Math.min(h * 0.11, 70) };
-  return { voice, start, panel };
+  return { voice, modes, start, panel };
 }

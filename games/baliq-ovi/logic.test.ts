@@ -5,8 +5,8 @@ import { AState, FishSim, type Bait, type WorldEnv } from "./fishai";
 import { AnglerGestures, emptyInput, NetDetector } from "./gestures";
 import { bedDepth, LAKE, rollWeather, shoreDamp, waveHeight, WAVES } from "./locations";
 import {
-  addCatch, basketKg, castDistance, castPower, castYaw, CastDetector, coopDone, coopProgress, duelWinner, emptyTally, FightModel, lineInDanger,
-  netHelpApplies, pointsFor, PumpTracker, StrikeDetector, TUNING,
+  addCatch, basketKg, castDistance, castYaw, coopDone, coopProgress, duelWinner, emptyTally, FightModel, lineInDanger,
+  netHelpApplies, pointsFor, PumpTracker, StrikeDetector, strokePower, TUNING,
 } from "./rules";
 import { FISH_SPECIES, pickSpecies, rollWeight, SPECIES, SPECIES_BY_ID } from "./species";
 import { VerletLine } from "./verlet";
@@ -54,11 +54,13 @@ describe("species data", () => {
   });
 });
 
-describe("cast", () => {
-  it("power grows with the flick speed, direction follows the hand", () => {
-    expect(castPower(0.1)).toBe(TUNING.cast.minPower);
-    expect(castPower(1.3)).toBeCloseTo(0.5, 1);
-    expect(castPower(9)).toBe(1);
+describe("cast numbers", () => {
+  it("power grows with the stroke speed, distance with power, direction follows the hand", () => {
+    expect(strokePower(0.2, T)).toBe(0);
+    expect(strokePower(TUNING.cast.minPeak, T)).toBe(0);
+    expect(strokePower(TUNING.cast.peakMax, T)).toBe(1);
+    expect(strokePower(9, T)).toBe(1);
+    expect(strokePower(2, T)).toBeGreaterThan(strokePower(1.5, T));
     expect(castDistance(1, false)).toBeGreaterThan(castDistance(0.3, false));
     expect(castDistance(1, true)).toBeLessThan(castDistance(1, false));
     expect(castDistance(1, false, 20)).toBe(20);
@@ -66,36 +68,9 @@ describe("cast", () => {
     expect(castYaw(-1)).toBeLessThan(0);
     expect(castYaw(10)).toBeCloseTo((TUNING.cast.maxYawDeg * Math.PI) / 180);
   });
-  it("needs the raised hand first, then a fast downward flick", () => {
-    const d = new CastDetector();
-    // flick without arming: nothing
-    expect(d.update(0.016, false, 2, T).fired).toBe(false);
-    d.reset();
-    d.update(0.7, true, 0, T);
-    expect(d.armed).toBe(true);
-    // slow movement does not cast
-    expect(d.update(0.016, true, 0.4, T).fired).toBe(false);
-    const r = d.update(0.016, false, 1.8, T);
-    expect(r.fired).toBe(true);
-    expect(r.power).toBeCloseTo(1.8 / 2.6, 2);
-    // cooldown + disarmed
-    expect(d.update(0.016, false, 2, T).fired).toBe(false);
-  });
-  it("the armed state expires after 1.6 s; kids and sensitivity lower the threshold", () => {
-    const d = new CastDetector();
-    d.update(0.016, true, 0, T);
-    for (let i = 0; i < 120; i++) d.update(0.016, false, 0, T);
-    expect(d.armed).toBe(false);
-    expect(d.update(0.016, false, 2, T).fired).toBe(false);
-    d.reset();
-    d.update(0.7, true, 0, T);
-    expect(d.update(0.016, false, 0.8, T).fired).toBe(false);
-    d.reset();
-    d.update(0.7, true, 0, T);
-    expect(d.update(0.016, false, 0.8, { kids: true, sensitivity: 1 }).fired).toBe(true);
-    d.reset();
-    d.update(0.7, true, 0, T);
-    expect(d.update(0.016, false, 0.8, { kids: false, sensitivity: 1.3 }).fired).toBe(true);
+  it("kids and sensitivity make a cast easier", () => {
+    expect(strokePower(1.2, { kids: true, sensitivity: 1 })).toBeGreaterThan(strokePower(1.2, T));
+    expect(strokePower(1.2, { kids: false, sensitivity: 1.4 })).toBeGreaterThan(strokePower(1.2, T));
   });
 });
 
@@ -240,22 +215,19 @@ describe("net gesture", () => {
 });
 
 describe("angler gestures (combined)", () => {
-  it("rod angles follow the hand; cast then strike through the same detector", () => {
+  it("rod angles follow the hand; the strike is an upward pull, but only while a bite is expected", () => {
     const g = new AnglerGestures();
     const i = { ...emptyInput(), present: true, scale: 100, rodVisible: true, shoulderX: 500, shoulderY: 300, rodX: 560, rodY: 200, handUp: true };
     for (let k = 0; k < 30; k++) g.update(0.016, i, T, true, false);
     expect(g.out.pitch).toBeGreaterThan(35);
     expect(g.out.yawDeg).toBeGreaterThan(5);
     expect(g.out.armed).toBe(true);
-    const r = g.update(0.016, { ...i, handUp: false, vy: 2 }, T, true, false);
-    expect(r.cast).toBe(true);
-    expect(r.castPower).toBeGreaterThan(0.5);
-    // while waiting for the bite the same upward pull is a strike
     const s = g.update(0.016, { ...i, handUp: false, vy: -2 }, T, false, true);
     expect(s.strike).toBe(true);
-    // but not when no bite is expected
     expect(g.update(0.5, { ...i, vy: -2 }, T, false, false).strike).toBe(false);
   });
+});
+describe("angler gestures (keyboard)", () => {
   it("keyboard fallback", () => {
     const g = new AnglerGestures();
     const i = { ...emptyInput(), keySwing: true, keyReel: true };

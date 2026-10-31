@@ -77,8 +77,7 @@ export const CONTROL_DEFAULTS = {
   handbrakeHoldSec: 0.9,
   /** camera switch: both hands above the head, min time between two switches */
   cameraCooldownSec: 1.4,
-  /** kids mode: automatic gas level and lane-keeping strength */
-  kidsGas: 0.5,
+  /** kids mode: lane-keeping strength (the gas is the knee, exactly as in every other mode: there is no automatic gas) */
   kidsLaneAssist: 1.0,
   /** standing: a knee lift of `legRange` x the leg's own rest height is a full pedal (prototype: .8) */
   legRange: 0.8,
@@ -86,6 +85,13 @@ export const CONTROL_DEFAULTS = {
   legDead: 0.14,
   /** seated mode: knee lift relative to the seated rest pose, in body scales, for a full pedal */
   seatedRange: 0.3,
+  /**
+   * An extra gate on the pedal value the leg reader gives out (0..1, hysteresis at half of it; 0 = no gate). Standing needs none
+   * (a dead zone of 14 % of a 0.8-leg-height range is already ~5 cm of knee lift); seated the same 14 % of 0.3 body scales is under
+   * 2 cm, which a shifting thigh reaches, so a seated pedal must be lifted clearly before the car moves.
+   */
+  pedalGate: 0,
+  pedalGateSeated: 0.3,
   /** pedal calibration: both legs down and still for this long ("ikkala oyoqda turing") */
   legCalibSec: 1,
   /** a lift must persist this long before the pedal engages (kills single-frame glitches, ~1.5 frames at 30 fps) */

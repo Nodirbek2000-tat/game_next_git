@@ -9,8 +9,8 @@ const poyga: GameModule = {
   meta: {
     slug: "poyga",
     maxPlayers: 1,
-    // the hand model: the menu cursor clicks with a closed fist
-    needsHands: true,
+    // no hand model (a second neural net and a 7.8 MB download): the garage cursor follows the pose fingertip and presses by dwell
+    needsHands: false,
     needsLegs: true,
     world: true,
     musicBpm: 96,

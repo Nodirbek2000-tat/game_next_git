@@ -1,6 +1,9 @@
-// Pool of fish meshes (one dynamic geometry each, shared per-species materials) plus the junk items.
+// Pool of fish meshes (one dynamic geometry each, shared per-species materials) plus the junk items. The Blender models are
+// loaded one at a time, and only for the species that really appear (ambient fish, the one on the line): the procedural
+// fish shows until then.
 
 import * as THREE from "three";
+import { newGltfLoader } from "@/engine/quality/assetUrl";
 import { FISH_VERTS, fishPositions, makeBootGeometry, makeBottleGeometry, makeFishGeometry, swimBend } from "./fishGeometry";
 import { SPECIES, type SpeciesDef } from "./species";
 import { makeFishSkin } from "./textures";
@@ -14,7 +17,7 @@ interface FishModel {
   mat: THREE.MeshStandardMaterial;
 }
 
-let gltfLoader: Promise<InstanceType<typeof import("three/examples/jsm/loaders/GLTFLoader.js").GLTFLoader>> | null = null;
+let gltfLoader: ReturnType<typeof newGltfLoader> | null = null;
 
 export class FishViews {
   readonly meshes: THREE.Mesh[] = [];
@@ -28,15 +31,25 @@ export class FishViews {
   private itemGeos: THREE.BufferGeometry[] = [];
   /** Blender models (tools/blender/baliq_fish.py) per species index, once loaded */
   private models: (FishModel | null)[] = [];
-  private loading = new Set<number>();
+  /** species whose model was asked for (one load at a time, after `start()`) */
+  private requested = new Set<number>();
+  private queue: number[] = [];
+  private running = false;
+  private started = false;
   /** the procedural geometry of each pooled mesh (kept while a model geometry is shown) */
   private procGeo: THREE.BufferGeometry[] = [];
   private alive = true;
 
-  /** `count` fish meshes; `items` boot and bottle meshes each. */
-  constructor(count: number, items: number, readonly group: THREE.Group, private tint: TintUniforms) {
+  /**
+   * `count` fish meshes; `items` boot and bottle meshes each. `warm` compiles the shaders of a model in the background
+   * (the model is only shown once that is done).
+   */
+  constructor(count: number, items: number, readonly group: THREE.Group, private tint: TintUniforms, private warm?: (o: THREE.Object3D) => Promise<void>) {
+    // until a species is set every mesh wears the material of the first species (one shader program, no default material)
+    const first = SPECIES.findIndex((s) => !s.junk);
+    const placeholder = this.mats[this.material(SPECIES[first])]!;
     for (let i = 0; i < count; i++) {
-      const m = new THREE.Mesh(makeFishGeometry(), new THREE.MeshStandardMaterial());
+      const m = new THREE.Mesh(makeFishGeometry(), placeholder);
       this.procGeo.push(m.geometry);
       m.frustumCulled = false;
       m.visible = false;
@@ -72,7 +85,8 @@ export class FishViews {
     bottleMat.userData.keep = true;
   }
 
-  private ensure(sp: SpeciesDef): number {
+  /** The procedural body and skin material of a species (built on first use). */
+  private material(sp: SpeciesDef): number {
     const idx = SPECIES.indexOf(sp);
     if (!this.base[idx]) {
       const b = new Float32Array(FISH_VERTS * 3);
@@ -85,16 +99,43 @@ export class FishViews {
       mat.userData.keep = true;
       tex.userData.keep = true;
       this.mats[idx] = mat;
-      void this.loadModel(sp, idx);
     }
     return idx;
   }
 
+  private ensure(sp: SpeciesDef): number {
+    const idx = this.material(sp);
+    if (!sp.junk && !this.requested.has(idx)) {
+      this.requested.add(idx);
+      this.queue.push(idx);
+      this.pump();
+    }
+    return idx;
+  }
+
+  /** Models may load from now on (the rig calls this once the first frames are out). */
+  start(): void {
+    this.started = true;
+    this.pump();
+  }
+
+  private pump(): void {
+    if (!this.started || this.running || !this.alive) return;
+    this.running = true;
+    void (async () => {
+      while (this.alive && this.queue.length) {
+        const idx = this.queue.shift()!;
+        await this.loadModel(SPECIES[idx], idx);
+        // a breath between two models (decode + upload are small, but they add up on a weak CPU)
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      this.running = false;
+    })();
+  }
+
   private async loadModel(sp: SpeciesDef, idx: number): Promise<void> {
-    if (sp.junk || this.loading.has(idx)) return;
-    this.loading.add(idx);
     try {
-      gltfLoader ??= import("three/examples/jsm/loaders/GLTFLoader.js").then(({ GLTFLoader }) => new GLTFLoader());
+      gltfLoader ??= newGltfLoader();
       const g = await (await gltfLoader).loadAsync(`/models/baliq-ovi/fish/${sp.id}.glb`);
       if (!this.alive) return;
       let mesh: THREE.Mesh | null = null;
@@ -117,6 +158,8 @@ export class FishViews {
       mat.envMapIntensity = 0.9;
       applyUnderwaterTint(mat, this.tint);
       mat.userData.keep = true;
+      await this.warm?.(src);
+      if (!this.alive) return;
       this.models[idx] = {
         base: new Float32Array(geo.getAttribute("position").array),
         normal: new Float32Array(geo.getAttribute("normal").array),
@@ -175,11 +218,6 @@ export class FishViews {
     pos.needsUpdate = true;
   }
 
-  /** Build every species material now so shaders compile before the countdown. */
-  prepareAll(list: SpeciesDef[]): void {
-    for (const s of list) if (!s.junk) this.ensure(s);
-  }
-
   /** Make a mesh draw in the main pass (above water) or in the underwater layer. */
   static setAbove(m: THREE.Mesh, above: boolean): void {
     m.layers.set(above ? L_WORLD : L_UNDER);
@@ -195,6 +233,7 @@ export class FishViews {
     }
     for (const t of this.tex) t.dispose();
     for (const m of this.mats) m?.dispose();
+    for (const g of this.procGeo) g.dispose();
     for (const m of this.itemMats) m.dispose();
     for (const g of this.itemGeos) g.dispose();
   }

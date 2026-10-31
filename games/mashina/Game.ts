@@ -1,29 +1,33 @@
 import * as THREE from "three";
 import { clamp } from "@/engine/math";
-import type { EngineApi } from "@/engine/types";
+import type { EngineApi, QualityLevel } from "@/engine/types";
+import { SKY_HDR } from "@/games/poyga/config";
+import { CarMats, disposeModels, type Precompile } from "@/games/poyga/models";
 import { CARS, CONTROL_DEFAULTS, DAY_SECONDS, DRIFT_DEFAULTS, RULE_DEFAULTS, type ModeId } from "./config";
 import { laneAssist } from "./logic/assist";
 import { DriftScorer } from "./logic/drift";
 import { InputMapper, newControls, type PadState } from "./logic/input";
 import { EXAM_NODES, MISSIONS, MissionRunner, spawnFor, yawOf, type MissionEvent } from "./logic/modes";
 import { Picker, type Choice } from "./logic/picker";
-import { ExamScorer, RulesEngine, type Verdict } from "./logic/rules";
-import { lightColor } from "./logic/signals";
+import { ExamScorer, RulesEngine, type VehicleSample, type Verdict } from "./logic/rules";
+import { lightColor, type LightColor } from "./logic/signals";
 import { PhysWorld } from "./physics/world";
 import { RaycastCar } from "./physics/vehicle";
 import { rideHeight, disposeCarParts } from "./render/carModel";
 import { CameraRig } from "./render/cameraRig";
-import { Beacon, Rain, SkidMarks, Smoke } from "./render/fx3d";
+import { Beacon, HeadGlow, Rain, SkidMarks, Smoke } from "./render/fx3d";
 import { drawHud, newHudModel, type HudModel } from "./render/hud";
+import { LOD, effectiveLevel, loadMetres, squeeze, type Lod } from "./render/lod";
 import { Mats } from "./render/materials";
 import { PlayerCar } from "./render/playerCar";
 import { Sky } from "./render/sky";
-import { SignAtlas, signKey, type BoardSpec } from "./render/textures";
+import { SignAtlas, signKey, skyCube, type BoardSpec } from "./render/textures";
 import { PedRenderer, SignalLamps, TrafficRenderer } from "./render/traffic3d";
+import { PropLayer, TreeLayer } from "./render/vegetation";
 import { loadSettings, parseQuery, choiceFrom, saveSettings, type QueryOptions } from "./settings";
 import { PedSim } from "./traffic/peds";
 import { TrafficSim } from "./traffic/sim";
-import { buildLayout, findRoute, nearestNode, SURFACE_GRIP, surfaceAt, zoneAt, bridgeDeckY, type Layout } from "./world/layout";
+import { buildLayout, findRoute, nearestNode, SURFACE_GRIP, surfaceAt, zoneAt, bridgeDeckY, type Layout, type Light } from "./world/layout";
 import { WorldStreamer } from "./world/streamer";
 
 type Phase = "loading" | "menu" | "driving" | "over";
@@ -71,17 +75,21 @@ export interface Oracle {
 export class MashinaGame {
   readonly L: Layout = buildLayout();
   private mats: Mats;
+  private carMats: CarMats;
   private atlas: SignAtlas;
   readonly sky: Sky;
   readonly streamer: WorldStreamer;
-  private trafficR: TrafficRenderer;
+  /** the traffic models, trees and street furniture stream in after the first picture (see `stream`) */
+  private trafficR: TrafficRenderer | null = null;
+  private trees: TreeLayer | null = null;
+  private props: PropLayer | null = null;
   private pedR: PedRenderer;
   private lamps: SignalLamps;
   private skid = new SkidMarks();
-  private smoke = new Smoke();
-  private rain = new Rain();
+  private smoke: Smoke;
+  private rain: Rain;
   private beacon = new Beacon();
-  private headlight = new THREE.SpotLight(0xfff0c8, 0, 70, 0.5, 0.5, 1.2);
+  private headGlow = new HeadGlow();
   private playerCar: PlayerCar;
   private cam: CameraRig;
   private phys: PhysWorld | null = null;
@@ -89,7 +97,30 @@ export class MashinaGame {
   private alive = true;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
-  private camSaved: { fov: number; near: number; far: number; pos: THREE.Vector3; quat: THREE.Quaternion };
+  private gl: THREE.WebGLRenderer;
+  private camSaved: { fov: number; near: number; far: number; pos: THREE.Vector3; quat: THREE.Quaternion; env: THREE.Texture | null; envK: number };
+  /** the quality level the scene was built for, and the numbers it follows now (the controller never goes above the built level) */
+  private built: QualityLevel;
+  private lod: Lod;
+  private lodLevel: QualityLevel | null = null;
+  private lodSqueeze = 0;
+  /** seconds of streaming time (loading screen + play) and how many of the loading stages have started */
+  private streamT = 0;
+  private stage = 0;
+  private savedShadow = false;
+  private envTex: THREE.Texture | null = null;
+  private envOn = false;
+  private cube: THREE.CubeTexture | null = null;
+  private probeRT: THREE.WebGLRenderTarget | null = null;
+  private warm: THREE.Group[] = [];
+  private rainAlloc = 1;
+  private lampT = 0;
+  /** what the traffic and the rules read about the player's car, reused every step */
+  private obstacle = { x: 0, z: 0, fx: 0, fz: 1, speed: 0 };
+  private sample: VehicleSample = { x: 0, z: 0, speed: 0, fx: 0, fz: 1, onRoad: true, grounded: true };
+  private lampColor = (l: Light): LightColor => lightColor(this.clock, l.axis, l.offset);
+  /** compile the shaders of an object that is not in the scene yet, against the real lights and haze (no stall when it is shown) */
+  private precompile: Precompile = (o) => this.compileFor(o, this.scene);
   private musicOn = false;
   private timescale = 1;
 
@@ -139,7 +170,6 @@ export class MashinaGame {
   private hudT = 0;
   private startupT = 0;
   private audioOn = false;
-  private lastQuality = "";
   private lastMsg = "";
   private hudView = { w: 1, h: 1 };
   private probeObj: Probe;
@@ -149,6 +179,7 @@ export class MashinaGame {
     private engine: EngineApi,
     private root: THREE.Group,
     camera: THREE.PerspectiveCamera,
+    gl: THREE.WebGLRenderer,
   ) {
     const q = (this.qopt = parseQuery(engine.query));
     const settings = loadSettings();
@@ -165,27 +196,52 @@ export class MashinaGame {
       const key = signKey(s.kind, s.text, s.sub);
       if (!boards.some((b) => b.key === key)) boards.push({ key, kind: s.kind, text: s.text ?? "", sub: s.sub });
     }
+    this.gl = gl;
+    this.built = engine.quality.level;
+    this.lod = LOD[this.built];
+    // no real-time shadows (the cars keep their soft contact shadows): the sun's shadow pass and the shadow lookups of every
+    // material cost a lot on an integrated GPU. The engine's Canvas switches them on for "high"; we switch them off (and put them back on exit).
+    this.savedShadow = gl.shadowMap.enabled;
+    gl.shadowMap.enabled = false;
     this.atlas = new SignAtlas(boards);
-    this.mats = new Mats(this.atlas);
+    this.mats = new Mats(this.atlas, gl, this.built, this.lod);
+    this.carMats = new CarMats(this.lod.clearcoat);
+    // without the HDR image light (the lite level) the car materials reflect a tiny sky gradient instead
+    if (!this.lod.hdr) {
+      this.cube = skyCube("#9fc3e8", "#e8eef2");
+      for (const m of [this.carMats.paint, this.carMats.trafficPaint, this.carMats.glass, this.carMats.metal, this.carMats.matte]) m.envMap = this.cube;
+      // (a bright gradient at the full strength of the HDR materials washes the paint out under the stronger lite-level sun)
+      this.carMats.paint.envMapIntensity = 0.4;
+      this.carMats.trafficPaint.envMapIntensity = 0.35;
+      this.carMats.glass.envMapIntensity = 0.8;
+      this.carMats.metal.envMapIntensity = 0.7;
+      this.carMats.matte.envMapIntensity = 0.15;
+    }
     this.scene = this.sceneOf(root) ?? new THREE.Scene();
-    this.sky = new Sky(this.scene, this.mats);
-    this.camSaved = { fov: camera.fov, near: camera.near, far: camera.far, pos: camera.position.clone(), quat: camera.quaternion.clone() };
+    this.camSaved = {
+      fov: camera.fov, near: camera.near, far: camera.far, pos: camera.position.clone(), quat: camera.quaternion.clone(),
+      env: this.scene.environment, envK: this.scene.environmentIntensity,
+    };
     this.camera = camera;
+    this.sky = new Sky(this.scene, this.mats, gl, this.built);
     root.add(this.sky.group);
     this.streamer = new WorldStreamer(this.L, this.mats, this.atlas, () => this.phys);
     root.add(this.streamer.group);
 
-    this.trafficR = new TrafficRenderer(this.mats, this.L);
     this.pedR = new PedRenderer(this.mats);
     this.lamps = new SignalLamps(this.L);
-    this.playerCar = new PlayerCar(this.mats);
+    this.playerCar = new PlayerCar(this.carMats);
     this.playerCar.set(CARS[this.choice.car], CARS[this.choice.car].colors[this.choice.color]);
-    root.add(this.trafficR.group, this.pedR.group, this.lamps.group, this.skid.mesh, this.smoke.points, this.rain.lines, this.beacon.mesh, this.playerCar.group);
-    root.add(this.headlight, this.headlight.target);
+    this.smoke = new Smoke(this.lod.smoke);
+    this.rain = new Rain(this.lod.rain);
+    this.rainAlloc = this.lod.rain;
+    // (hidden triangles with every material, so the engine's start-up shader precompile sees them all, also those no tile uses yet)
+    this.warm = [this.mats.warm(), this.carMats.warm()];
+    root.add(this.pedR.group, this.lamps.group, this.skid.mesh, this.smoke.points, this.rain.lines, this.beacon.mesh, this.headGlow.mesh, this.playerCar.group, this.playerCar.shadow, ...this.warm);
     this.cam = new CameraRig(camera);
 
     // ---- logic
-    this.input = new InputMapper(this.controlConfig(), { seated: this.choice.seated, kids: engine.kids, handbrakeSide: engine.leftHanded ? "L" : "R" });
+    this.input = new InputMapper(this.controlConfig(), { seated: this.choice.seated, handbrakeSide: engine.leftHanded ? "L" : "R" });
     this.picker = q.mode ? null : new Picker(this.choice);
     this.peds = new PedSim(this.L);
     this.traffic = new TrafficSim(this.L, {
@@ -216,10 +272,12 @@ export class MashinaGame {
       },
     });
 
-    // ---- the world around the default spawn, built synchronously so the first frames (and the shader precompile) see it
+    // ---- the essentials, built now: the tiles around the spawn (the first one is the floor the car stands on), the car, the sky.
+    // The rest of the district, the traffic models, the image light, trees and street furniture stream in afterwards (see `stream`),
+    // a few milliseconds per frame, so the game opens fast.
     const sp = spawnFor(this.L, this.mode);
-    this.streamer.loadAll(sp.x, sp.z, this.engine.quality.viewDistance, 10);
-    this.sky.setViewDistance(this.streamer.radii(this.engine.quality.viewDistance).far);
+    this.streamer.loadAll(sp.x, sp.z, this.engine.quality.viewDistance, 3);
+    this.applyLod();
     const t0 = this.timeFixed ?? (this.mode === "erkin" ? this.timeStart : 0.42);
     this.sky.set(t0, 0);
     this.sky.follow(sp.x, sp.z);
@@ -293,7 +351,7 @@ export class MashinaGame {
     this.peds.reset();
     this.traffic.reset();
     this.skid.clear();
-    this.input.setOptions({ seated: this.seated, kids: this.kids, handbrakeSide: e.leftHanded ? "L" : "R" });
+    this.input.setOptions({ seated: this.seated, handbrakeSide: e.leftHanded ? "L" : "R" });
     this.input.reset();
     this.missions = null;
     const q = this.qopt;
@@ -304,10 +362,10 @@ export class MashinaGame {
     if (this.timeFixed === null && this.mode !== "erkin") this.timeFixed = 0.42;
     this.timeStart = 0.3;
     this.rainTarget = q.rain ? 1 : 0;
-    this.traffic.density = (this.mode === "drift" ? 0 : [0.55, 0.8, 1][["low", "medium", "high"].indexOf(e.quality.level)] ?? 1) * (q.traffic ?? 1);
-    // place the car for the mode
+    this.applyDensity();
+    // place the car for the mode (the tile under it now, the rest streams in)
     const sp = spawnFor(this.L, this.mode);
-    this.streamer.loadAll(sp.x, sp.z, e.quality.viewDistance, 8);
+    this.streamer.loadAll(sp.x, sp.z, e.quality.viewDistance, 2);
     this.makeCarIfChanged();
     this.car?.place(sp.x, rideHeight(CARS[this.choice.car]) + 0.2, sp.z, yawOf(sp.fx, sp.fz));
     this.lastSafe = { x: sp.x, z: sp.z, fx: sp.fx, fz: sp.fz, t: 0 };
@@ -424,10 +482,12 @@ export class MashinaGame {
     if (!this.alive) return;
     const e = this.engine;
     this.startupT += dt;
+    this.keepShadowsOff();
+    this.applyLod();
     // before the car exists the world is shown from the spawn point
     if (!this.car) {
       const sp = spawnFor(this.L, this.mode);
-      this.streamer.update(sp.x, sp.z, e.quality.viewDistance, dt, 2);
+      this.stream(sp.x, sp.z, dt, 2);
       return;
     }
     const counting = e.state === "countdown";
@@ -470,6 +530,144 @@ export class MashinaGame {
     this.input.update(dt, p, e.keys, pad, speed, e.stage.h, c);
   }
 
+  // ------------------------------------------------------------------------------------------ quality and streaming
+
+  /** the engine's Canvas re-applies its own shadow setting when it reconfigures (e.g. a resolution change): keep ours off */
+  private keepShadowsOff(): void {
+    if (this.gl.shadowMap.enabled) this.gl.shadowMap.enabled = false;
+  }
+
+  /** whether the post pipeline (Scene.tsx) is drawing the game now: it draws into a linear render target, the screen gets tone mapping */
+  private postOn(): boolean {
+    return LOD[effectiveLevel(this.built, this.engine.quality.level)].post;
+  }
+
+  /**
+   * `compileAsync` of `o` for the lights of the game and the haze / image light of `target`. The shader variant depends on where
+   * the picture goes: the post pipeline draws the game into a linear render target (no tone mapping), the screen gets ACES and
+   * sRGB. A render target is bound while the variants are chosen, so the right ones are built.
+   */
+  private async compileFor(o: THREE.Object3D, target: THREE.Scene): Promise<void> {
+    const gl = this.gl;
+    const prev = gl.getRenderTarget();
+    try {
+      if (this.postOn()) gl.setRenderTarget((this.probeRT ??= new THREE.WebGLRenderTarget(1, 1)));
+      const done = gl.compileAsync(o, this.camera, target);
+      gl.setRenderTarget(prev);
+      await done;
+    } catch {
+      /* it compiles when first drawn instead */
+      gl.setRenderTarget(prev);
+    }
+  }
+
+  /** the image light: the HDR sky turned into a reflection map (a few shaders and a GPU pass: not in the first frames) */
+  private async loadEnv(): Promise<void> {
+    try {
+      const { HDRLoader } = await import("three/examples/jsm/loaders/HDRLoader.js");
+      const tex = await new HDRLoader().loadAsync(SKY_HDR);
+      if (!this.alive) {
+        tex.dispose();
+        return;
+      }
+      tex.mapping = THREE.EquirectangularReflectionMapping;
+      const pm = new THREE.PMREMGenerator(this.gl);
+      this.envTex = pm.fromEquirectangular(tex).texture;
+      pm.dispose();
+      tex.dispose();
+      // every shader changes with an image light: build the new variants first (against a stand-in scene that already has it),
+      // switch when they are ready, so no frame waits for a whole district of shaders
+      const probe = new THREE.Scene();
+      probe.environment = this.envTex;
+      probe.fog = this.scene.fog;
+      await this.compileFor(this.root, probe);
+      if (!this.alive) return;
+      this.scene.environment = this.envTex;
+      this.envOn = true;
+      // (the image light shares the ambient work with the hemisphere light)
+      this.sky.setAmbientScale(0.55);
+    } catch {
+      /* no image lighting: the sun and the hemisphere light still work */
+    }
+  }
+
+  /**
+   * Follow the quality level, live (no reload): streamed radius, haze and far plane, backdrop, traffic and people counts, tree
+   * and furniture caps. What was decided when the scene was built (texture maps, clear coat, which models were fetched) stays;
+   * the controller never goes above the level the game started on.
+   */
+  private applyLod(): void {
+    const q = this.engine.quality;
+    const lvl = effectiveLevel(this.built, q.level);
+    // the emergency squeeze of the controller (below the lowest level) shortens everything a bit more
+    const sq = squeeze(q.level, q.viewDistance);
+    if (lvl === this.lodLevel && Math.abs(sq - this.lodSqueeze) < 0.005) return;
+    this.lodLevel = lvl;
+    this.lodSqueeze = sq;
+    const lod = LOD[lvl];
+    this.lod = lod;
+    this.sky.setView(loadMetres(q.viewDistance), lod);
+    this.camera.far = this.sky.far;
+    this.camera.updateProjectionMatrix();
+    this.cam.far = this.sky.far;
+    this.sky.setLights(lod.sun, lod.hemi);
+    this.trees?.setLevel(lvl);
+    if (this.trees) this.trees.reach = this.sky.far;
+    this.smoke.density = q.particles;
+    this.peds.maxPeds = Math.max(4, Math.round(lod.peds * sq));
+    // (cars are only simulated inside what the haze shows)
+    this.traffic.spawnMax = clamp(this.sky.far * 0.95, 120, 250);
+    this.applyDensity();
+  }
+
+  /** the number of AI cars: the level's density (and the squeeze), none in the drift area, the test option on top */
+  private applyDensity(): void {
+    this.traffic.density = this.mode === "drift" ? 0 : this.lod.density * this.lodSqueeze * (this.qopt.traffic ?? 1);
+  }
+
+  /**
+   * What the first picture does not need arrives afterwards, one step per frame at most: traffic models and the image light,
+   * trees, street furniture. Meanwhile the district around the car is built a little per frame (`boost` stretches the time
+   * allowed per frame: on the loading screen and the countdown nobody sees a slow frame).
+   */
+  private stream(x: number, z: number, dt: number, boost: number): void {
+    this.streamT += dt;
+    if (this.stage === 0 && this.streamT > 0.15) {
+      this.stage = 1;
+      this.trafficR = new TrafficRenderer(this.carMats, this.L);
+      this.root.add(this.trafficR.group);
+      if (LOD[this.built].hdr) void this.loadEnv();
+    } else if (this.stage === 1 && this.streamT > 0.8) {
+      this.stage = 2;
+      this.trees = new TreeLayer(this.gl, this.built, this.precompile);
+      this.root.add(this.trees.group);
+      this.lodLevel = null;
+      this.applyLod();
+    } else if (this.stage === 2 && this.streamT > 1.6) {
+      this.stage = 3;
+      if (LOD[this.built].props) {
+        this.props = new PropLayer(this.precompile);
+        this.root.add(this.props.group);
+      }
+    }
+    const e = this.engine;
+    // few tiles yet: more time per frame and up to three tiles finished (the loading screen / countdown); later one tile per frame
+    const few = this.streamer.loadedCount < 9;
+    const until = performance.now() + this.lod.workMs * boost * (few ? 3 : 1);
+    this.streamer.update(x, z, e.quality.viewDistance, dt, until, few ? 3 : 1);
+    this.trees?.update(dt, x, z, this.streamer.sources, this.streamer.version);
+    this.props?.update(this.streamer.sources, this.streamer.version, this.lod.props);
+  }
+
+  /** Called while the engine shows its loading screen (the game frame does not run yet): builds the district meanwhile. */
+  preload(dt: number): void {
+    if (!this.alive) return;
+    this.keepShadowsOff();
+    this.applyLod();
+    const sp = spawnFor(this.L, this.mode);
+    this.stream(sp.x, sp.z, dt, 2.5);
+  }
+
   private runPicker(dt: number): void {
     const pk = this.picker!;
     const c = this.controls;
@@ -489,7 +687,7 @@ export class MashinaGame {
     // live preview of car / colour
     const spec = CARS[this.choice.car];
     if (this.playerCar.spec?.id !== this.choice.car || this.playerCar.spec === null) this.makeCarIfChanged();
-    this.mats.paint.color.set(spec.colors[this.choice.color] ?? spec.colors[0]);
+    this.carMats.paint.color.set(spec.colors[this.choice.color] ?? spec.colors[0]);
     if (pk.done) {
       this.picker = null;
       this.phase = "driving";
@@ -523,8 +721,9 @@ export class MashinaGame {
     const steerHelp = this.kids && this.mode !== "drift" ? laneAssist(L, car.body.translation().x, car.body.translation().z, car.fx, car.fz, Math.abs(car.speed), CONTROL_DEFAULTS.kidsLaneAssist) : 0;
     const inp = car.input;
     // gentle start: from a standstill the engine gives ~55 % of the pedal, full power from ~5 m/s (no wheelspin, no lurch)
+    // (a released pedal stays exactly 0: the factor only shapes a gas that is really there)
     const launch = 0.55 + 0.45 * clamp(Math.abs(car.speed) / 5, 0, 1);
-    inp.gas = c.gas * launch;
+    inp.gas = c.gas > 0 ? c.gas * launch : 0;
     inp.brake = c.brake;
     inp.steer = clamp(c.steer + steerHelp, -1, 1);
     inp.handbrake = c.handbrake;
@@ -579,7 +778,12 @@ export class MashinaGame {
     this.inv = Math.max(0, this.inv - dt);
 
     // ---- traffic + pedestrians
-    const obstacle = { x: p.x, z: p.z, fx: car.fx, fz: car.fz, speed: Math.abs(car.speed) };
+    const obstacle = this.obstacle;
+    obstacle.x = p.x;
+    obstacle.z = p.z;
+    obstacle.fx = car.fx;
+    obstacle.fz = car.fz;
+    obstacle.speed = Math.abs(car.speed);
     this.traffic.update(dt, this.clock, obstacle);
     this.peds.update(dt, p.x, p.z);
     this.collideTraffic(car, p);
@@ -587,7 +791,15 @@ export class MashinaGame {
     // ---- rules
     const onRoad = surfaceAt(L, p.x, p.z) !== "grass";
     if (this.mode !== "drift") {
-      this.rules.update(dt, { x: p.x, z: p.z, speed: Math.abs(car.speed), fx: car.fx, fz: car.fz, onRoad, grounded: car.grounded >= 3 });
+      const vs = this.sample;
+      vs.x = p.x;
+      vs.z = p.z;
+      vs.speed = Math.abs(car.speed);
+      vs.fx = car.fx;
+      vs.fz = car.fz;
+      vs.onRoad = onRoad;
+      vs.grounded = car.grounded >= 3;
+      this.rules.update(dt, vs);
       const hit = this.peds.hit(p.x, p.z, car.fx, car.fz);
       if (hit && Math.abs(car.speed) > 0.5 && this.inv <= 0) {
         this.peds.knock(hit);
@@ -823,15 +1035,8 @@ export class MashinaGame {
     this.playerCar.update(car);
     const cockpit = this.cam.mode === "cockpit";
     this.playerCar.group.visible = !cockpit && !(this.inv > 0 && Math.sin(now / 60) > 0);
-    // streaming + sky
-    this.streamer.update(t.x, t.z, e.quality.viewDistance, dt, this.streamer.loadedCount < 6 ? 3 : 1);
-    const qk = `${e.quality.viewDistance}|${e.quality.shadows}`;
-    if (qk !== this.lastQuality) {
-      this.lastQuality = qk;
-      this.sky.setViewDistance(this.streamer.radii(e.quality.viewDistance).far);
-      this.sky.sun.castShadow = e.quality.shadows;
-      this.smoke.density = e.quality.particles;
-    }
+    // streaming + sky (the view and the counts follow the quality level, live)
+    this.stream(t.x, t.z, dt, 1);
     this.sky.follow(t.x, t.z);
     if (this.phase !== "driving" && this.phase !== "over") {
       const t01 = this.timeFixed ?? 0.42;
@@ -839,18 +1044,22 @@ export class MashinaGame {
     }
     // camera
     this.cam.update(dt, t.x, t.y, t.z, car.fx, car.fz, car.vx, car.vz, car.speed, q);
-    // lights at night
+    // light at night: the headlight pool on the road (no light source), the image light fades with the daylight
     const night = this.sky.state.night;
-    this.headlight.intensity = night > 0.35 ? 28 * night : 0;
-    this.headlight.position.set(t.x + car.fx * 2.3, t.y + 0.2, t.z + car.fz * 2.3);
-    this.headlight.target.position.set(t.x + car.fx * 25, t.y - 1.2, t.z + car.fz * 25);
+    this.headGlow.update(night, t.x, t.y - rideHeight(car.spec), t.z, car.fx, car.fz);
+    if (this.envOn) this.scene.environmentIntensity = this.lod.env * (0.12 + 0.88 * (1 - night));
     // traffic, pedestrians, signal lamps
-    this.trafficR.update(this.traffic.cars);
+    this.trafficR?.update(this.traffic.cars);
     this.pedR.update(this.peds.peds);
-    this.lamps.update((l) => lightColor(this.clock, l.axis, l.offset));
+    // (the signals change every few seconds: ten checks a second are plenty)
+    this.lampT -= dt;
+    if (this.lampT <= 0) {
+      this.lampT = 0.1;
+      this.lamps.update(this.lampColor);
+    }
     // effects
     this.updateFx(dt, car, t);
-    this.rain.update(this.clock, this.camera.position, clamp(this.rainNow * 1.3, 0, 1) * (e.quality.particles > 0.3 ? 1 : 0.5));
+    this.rain.update(this.clock, this.camera.position, clamp(this.rainNow * 1.3, 0, 1) * Math.min(1, this.lod.rain / this.rainAlloc) * (e.quality.particles > 0.3 ? 1 : 0.5));
     this.smoke.update(dt, e.stage.h);
     // beacon at the mission target / pickup
     if (this.targetPt && (this.mode === "missiya" || this.mode === "imtihon")) {
@@ -1070,22 +1279,37 @@ export class MashinaGame {
     this.streamer.dispose();
     this.phys?.dispose();
     this.phys = null;
-    this.trafficR.dispose();
+    this.trafficR?.dispose();
+    this.trees?.dispose();
+    this.props?.dispose();
     this.pedR.dispose();
     this.lamps.dispose();
     this.skid.dispose();
     this.smoke.dispose();
     this.rain.dispose();
     this.beacon.dispose();
+    this.headGlow.dispose();
     this.playerCar.dispose();
     this.sky.dispose();
+    for (const w of this.warm)
+      w.traverse((o) => {
+        if ((o as THREE.InstancedMesh).isInstancedMesh) (o as THREE.InstancedMesh).dispose();
+      });
     this.mats.dispose();
+    this.carMats.dispose();
     this.atlas.texture.dispose();
     disposeCarParts();
+    disposeModels();
+    this.cube?.dispose();
+    this.envTex?.dispose();
+    this.probeRT?.dispose();
     this.root.clear();
-    // give the engine's scene and camera back the way we found them
+    // give the engine's scene, camera and renderer back the way we found them
+    this.gl.shadowMap.enabled = this.savedShadow;
     this.scene.background = null;
     this.scene.fog = null;
+    this.scene.environment = this.camSaved.env;
+    this.scene.environmentIntensity = this.camSaved.envK;
     const cam = this.camera;
     cam.fov = this.camSaved.fov;
     cam.near = this.camSaved.near;

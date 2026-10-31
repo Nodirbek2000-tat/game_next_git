@@ -54,13 +54,40 @@ export const newControls = (): Controls => ({
 
 export interface InputOptions {
   seated: boolean;
-  kids: boolean;
+  /** accepted for callers that pass it; the pedals do not depend on it (no automatic gas in any mode) */
+  kids?: boolean;
   /** which wrist pulls the handbrake: the right hand, or the left one for left-handed players */
   handbrakeSide: "L" | "R";
 }
 
 const LEFT_WRIST = 15;
 const RIGHT_WRIST = 16;
+
+/** Pedal value below which the smoothed output is snapped to exactly 0 (an exponential approach never gets there by itself). */
+const PEDAL_ZERO = 0.003;
+
+/**
+ * Hysteresis gate on a pedal value from the leg reader: nothing passes until the value reaches `enter`, then it passes
+ * (re-based so it starts at 0) until it falls under half of `enter`. `enter` 0 = open gate (the value passes unchanged).
+ */
+export class PedalGate {
+  private open = false;
+
+  reset(): void {
+    this.open = false;
+  }
+
+  apply(v: number, enter: number): number {
+    if (enter <= 0) {
+      this.open = false;
+      return v;
+    }
+    const exit = enter * 0.5;
+    if (v >= enter) this.open = true;
+    else if (v < exit) this.open = false;
+    return this.open ? clamp((v - exit) / (1 - exit), 0, 1) : 0;
+  }
+}
 
 /** Right hand pulled sharply down from the wheel while the other hand stays: handbrake pulse (TZ 6.3). */
 export class HandbrakeDetector {
@@ -89,14 +116,17 @@ export class HandbrakeDetector {
   }
 }
 
+/** A trigger that rests a little pressed (worn analog triggers read 0.05..0.1) must not be a pedal: dead zone, re-based to 0..1. */
+const trigger = (v: number): number => (v < 0.12 ? 0 : (v - 0.12) / 0.88);
+
 export function mapPad(pad: PadState, out: Controls): boolean {
   const dead = 0.12;
   const ax = pad.axes[0] ?? 0;
-  const gas = pad.buttons[7]?.value ?? 0;
-  const brake = pad.buttons[6]?.value ?? 0;
+  const gas = trigger(pad.buttons[7]?.value ?? 0);
+  const brake = trigger(pad.buttons[6]?.value ?? 0);
   const hb = !!pad.buttons[0]?.pressed;
   const cam = !!pad.buttons[3]?.pressed;
-  const active = Math.abs(ax) > dead || gas > 0.05 || brake > 0.05 || hb || cam;
+  const active = Math.abs(ax) > dead || gas > 0 || brake > 0 || hb || cam;
   if (!active) return false;
   out.steer = Math.abs(ax) > dead ? clamp((Math.abs(ax) - dead) / (1 - dead), 0, 1) * Math.sign(ax) : 0;
   out.gas = gas;
@@ -120,6 +150,9 @@ export class InputMapper {
   private rwSeen = false;
   private steerTarget = 0;
   private handsLostT = 0;
+  private gasGate = new PedalGate();
+  private brakeGate = new PedalGate();
+  private lastSeated: boolean;
   private gasSm = 0;
   private brakeSm = 0;
   private steerSm = 0;
@@ -138,6 +171,7 @@ export class InputMapper {
   ) {
     this.legs = new LegPedals({ seated: opts.seated, range: cfg.legRange, dead: cfg.legDead, seatedRange: cfg.seatedRange, calibSec: cfg.legCalibSec, engageSec: cfg.legEngageSec });
     this.hand = new HandbrakeDetector(cfg);
+    this.lastSeated = opts.seated;
   }
 
   /** the pedal reader (HUD / tests look at its calibration state) */
@@ -153,11 +187,18 @@ export class InputMapper {
   setOptions(o: Partial<InputOptions>): void {
     Object.assign(this.opts, o);
     this.legs.setSeated(this.opts.seated);
+    if (this.legs.seated !== this.lastSeated) {
+      this.lastSeated = this.legs.seated;
+      this.gasGate.reset();
+      this.brakeGate.reset();
+    }
   }
 
   /** New session. The pedal calibration is KEPT (the player stands the same way as in the menu); `recalibrate` starts it over. */
   reset(recalibrate = false): void {
     this.gasSm = this.brakeSm = this.steerSm = 0;
+    this.gasGate.reset();
+    this.brakeGate.reset();
     this.reverse = false;
     this.holdT = 0;
     this.gearArmed = true;
@@ -195,16 +236,18 @@ export class InputMapper {
       const L = body.lm;
       const lg = this.legs;
       lg.update(L, body.scale, dt);
-      gas = lg.gas;
-      brake = lg.brake;
+      const gate = lg.seated ? c.pedalGateSeated : c.pedalGate;
+      gas = this.gasGate.apply(lg.gas, gate);
+      brake = this.brakeGate.apply(lg.brake, gate);
       out.legsOk = lg.ok;
       out.legsReady = lg.ready;
       out.legsCalib = lg.calib;
       out.legsSitting = lg.sitting;
       out.gasRaw = lg.gasRaw;
       out.brakeRaw = lg.brakeRaw;
-      out.gasThr = lg.gasThr;
-      out.brakeThr = lg.brakeThr;
+      // (the HUD tick shows the knee lift the gate needs: value = (k - e) / (1 - e), e = 0.55 x the reader's dead zone)
+      out.gasThr = gate > 0 ? Math.max(lg.gasThr, 0.55 * lg.gasThr + gate * (1 - 0.55 * lg.gasThr)) : lg.gasThr;
+      out.brakeThr = gate > 0 ? Math.max(lg.brakeThr, 0.55 * lg.brakeThr + gate * (1 - 0.55 * lg.brakeThr)) : lg.brakeThr;
       out.okGas = lg.okR;
       out.okBrake = lg.okL;
       const lw = L[LEFT_WRIST];
@@ -250,6 +293,8 @@ export class InputMapper {
       this.camPrev = up;
     } else {
       this.legs.absent(dt);
+      this.gasGate.reset();
+      this.brakeGate.reset();
       this.steerTarget = 0;
       this.lwSeen = this.rwSeen = false;
     }
@@ -296,9 +341,6 @@ export class InputMapper {
       hb = out.handbrake;
     }
 
-    // kids: automatic gas unless the brake is pressed
-    if (this.opts.kids && brake < 0.2) gas = Math.max(gas, c.kidsGas);
-
     // reverse gear: brake held at a standstill for 1.5 s toggles D <-> R
     if (Math.abs(speed) < c.reverseMaxSpeed && brake > 0.5 && gas < 0.3) {
       this.holdT += dt;
@@ -320,6 +362,9 @@ export class InputMapper {
     // (releasing a pedal is faster than pressing it: a lost leg must stop the engine at once)
     this.gasSm += (gas - this.gasSm) * (1 - Math.exp(-c.gasSmooth * (gas < this.gasSm ? 1.8 : 1) * dt));
     this.brakeSm += (brake - this.brakeSm) * (1 - Math.exp(-c.brakeSmooth * (brake < this.brakeSm ? 1.8 : 1) * dt));
+    // released: exactly 0, not a leftover of the exponential (the car must not feel a pressed pedal)
+    if (gas <= 0 && this.gasSm < PEDAL_ZERO) this.gasSm = 0;
+    if (brake <= 0 && this.brakeSm < PEDAL_ZERO) this.brakeSm = 0;
     this.steerSm += (steer - this.steerSm) * (1 - Math.exp(-c.steerSmooth * dt));
     out.gas = this.gasSm;
     out.brake = this.brakeSm;

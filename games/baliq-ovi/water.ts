@@ -3,7 +3,9 @@
 // (sky reflection by fresnel, no render targets) with depth based transparency so the shallows stay visible.
 
 import * as THREE from "three";
+import type { QualityLevel } from "@/engine/types";
 import { WAVES } from "./locations";
+import { LOD } from "./lod";
 import { DEPTH_REGION, DEPTH_SCALE } from "./textures";
 
 /** Layers: 0 = world (reflected), 2 = underwater (refraction pass), 3 = not reflected (rods, line, floats, effects). */
@@ -87,8 +89,9 @@ void main(){
   float fade = clamp(1. - dist/140., 0.25, 1.);
   vec4 s1 = texture2D(uNormal, vW.xz*0.06 + vec2(uTime*0.018, uTime*0.012));
   vec4 s2 = texture2D(uNormal, vW.xz*0.21 + vec2(-uTime*0.03, uTime*0.026));
-  vec4 s3 = texture2D(uNormal, vW.xz*1.1 + vec2(uTime*0.11, -uTime*0.09));
-  vec2 nm = ((s1.xy*2.-1.) + (s2.xy*2.-1.)*0.7)*(0.16 + uWind*0.3) + (s3.xy*2.-1.)*uRain*0.3;
+  vec2 nm = ((s1.xy*2.-1.) + (s2.xy*2.-1.)*0.7)*(0.16 + uWind*0.3);
+  // the fine rain ripples: a third read only while it rains
+  if (uRain > 0.) nm += (texture2D(uNormal, vW.xz*1.1 + vec2(uTime*0.11, -uTime*0.09)).xy*2.-1.)*uRain*0.3;
   vec3 N = normalize(vN + vec3(nm.x, 0., nm.y)*fade);
   float depth = depthAt(vW.xz);
   float tint = 1. - exp(-depth*1.6/uClarity);
@@ -220,6 +223,8 @@ export class WaterPasses {
   readonly refl: THREE.WebGLRenderTarget | null;
   readonly refr: THREE.WebGLRenderTarget | null;
   enabled = true;
+  /** the reflection is redrawn every `period`-th frame (the refraction every frame) */
+  period: number;
   private cam = new THREE.PerspectiveCamera();
   private view = new THREE.Vector3();
   private target = new THREE.Vector3();
@@ -237,20 +242,21 @@ export class WaterPasses {
   constructor(
     private water: THREE.Mesh,
     private mat: THREE.ShaderMaterial,
-    level: "high" | "medium" | "low",
+    level: QualityLevel,
     private deep: THREE.Color,
   ) {
-    if (level === "low") {
+    const p = LOD[level].passes;
+    this.period = p?.every ?? 2;
+    if (!p) {
       this.refl = this.refr = null;
       this.enabled = false;
       return;
     }
-    // perf: small reflection / refraction targets on every level (the water is blurry anyway; no 1024x512 half-float targets on "high")
-    const hi = false;
+    // perf: small reflection / refraction targets (the water is blurry anyway); sizes per level in lod.ts
     const mk = (w: number, h: number): THREE.WebGLRenderTarget =>
       new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, depthBuffer: true, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
-    this.refl = mk(hi ? 1024 : 512, hi ? 512 : 256);
-    this.refr = mk(hi ? 768 : 384, hi ? 432 : 216);
+    this.refl = mk(p.refl[0], p.refl[1]);
+    this.refr = mk(p.refr[0], p.refr[1]);
     this.cam.layers.set(L_WORLD);
     mat.uniforms.uRefl.value = this.refl.texture;
     mat.uniforms.uRefr.value = this.refr.texture;
@@ -263,7 +269,7 @@ export class WaterPasses {
     this.mat.uniforms.uUseRefr.value = this.enabled ? 1 : 0;
   }
 
-  render(gl: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.PerspectiveCamera, everyOther: boolean): void {
+  render(gl: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.PerspectiveCamera): void {
     this.calls = 0;
     this.tris = 0;
     if (!this.enabled || !this.refl || !this.refr) return;
@@ -281,7 +287,7 @@ export class WaterPasses {
     const prevAlpha = gl.getClearAlpha();
     const prevMask = camera.layers.mask;
 
-    if (!everyOther || this.frame % 2 === 0) {
+    if ((this.frame - 1) % this.period === 0) {
       // mirrored camera (water plane y = 0, normal +y)
       const cam = this.cam;
       const cp = camera.position;

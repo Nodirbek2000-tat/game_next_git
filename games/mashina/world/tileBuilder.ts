@@ -3,9 +3,11 @@ import { GeoBuilder } from "../render/geo";
 import { signKey, type SignAtlas } from "../render/textures";
 import { DECK_H, deckProfile, hash2, RIVER_HALF, ROAD, STUB, TILE, type Dir, type Layout, type Rect, type Sign, type TileSpec } from "./layout";
 
-// Builds the geometry of ONE tile: everything static is merged into a handful of meshes (ground+roads, buildings, props,
-// signs, glowing lamps, water) plus the collision shapes for Rapier. Another tile kind (countryside, serpentine, ...)
-// is another `case` here and more rows in the layout; nothing else in the game has to change.
+// Builds the geometry of ONE tile: everything static is merged into a handful of meshes (ground, roads and pavement, buildings,
+// detail, signs, glowing lamps, water) plus the collision shapes for Rapier. Trees and street furniture are NOT geometry here:
+// the tile only lists where they stand (trees, props), the vegetation layer draws them as instanced models. Another tile
+// kind (countryside, serpentine, ...) is another case here and more rows in the layout; nothing else in the game has to change.
+// The build is a generator: buildTileSteps yields between the heavy parts so the streamer can spread one tile over several frames.
 
 export interface BoxCollider {
   x: number;
@@ -20,8 +22,27 @@ export interface MeshCollider {
   verts: Float32Array;
   idx: Uint32Array;
 }
+/** A tree standing in the tile; v 0..1 picks the model variant. */
+export interface TreePlace {
+  x: number;
+  z: number;
+  s: number;
+  v: number;
+}
+export type PropKind = "bench" | "hydrant" | "box" | "planter" | "shrub";
+export interface PropPlace {
+  kind: PropKind;
+  x: number;
+  z: number;
+  rot: number;
+  s: number;
+}
+
 export interface TileBuild {
+  /** the flat ground split by surface: grass / fields (base), asphalt + concrete (road), pavement + stone (walk) */
   base: THREE.BufferGeometry | null;
+  road: THREE.BufferGeometry | null;
+  walk: THREE.BufferGeometry | null;
   bldg: THREE.BufferGeometry | null;
   detail: THREE.BufferGeometry | null;
   signs: THREE.BufferGeometry | null;
@@ -31,6 +52,8 @@ export interface TileBuild {
   meshes: MeshCollider[];
   /** flat ground colliders [x0, z0, x1, z1] at y = 0 (empty for the bridge tile: it has a river) */
   ground: Rect[];
+  trees: TreePlace[];
+  props: PropPlace[];
   /** rough number of buildings / props (stats, tests) */
   stats: { buildings: number; props: number };
 }
@@ -56,7 +79,6 @@ export const C = {
   barrier: 0xb9b9b5,
 };
 const FACADES = [0xe8dcc0, 0xd9c7a0, 0xcdb78c, 0xe3d3b3, 0xbfc6c9, 0xd8b99a, 0xe9e2d0];
-const LEAVES = [0x3d7d31, 0x2f6b2a, 0x4a8a35, 0x5a9a3a];
 
 function rng(seed: number): () => number {
   let s = seed >>> 0 || 1;
@@ -74,8 +96,29 @@ interface Layer {
   pri: number;
 }
 
+type Tint = [number, number, number];
+type Bucket = "road" | "walk" | "base";
+/**
+ * Which mesh (and so which PBR texture) a flat colour of the ground goes to, and the tint multiplied with that texture (linear
+ * RGB; the texture files are the ones of Shahar simulyatori: dark asphalt, grey pavement, olive grass).
+ */
+const SURFACE: Record<number, { to: Bucket; c: Tint }> = {
+  [C.asphalt]: { to: "road", c: [1, 1, 1] },
+  [C.concrete]: { to: "road", c: [1.9, 1.9, 1.85] },
+  [C.sidewalk]: { to: "walk", c: [1, 1, 1] },
+  [C.stone]: { to: "walk", c: [1.45, 1.3, 1.05] },
+  [C.lot]: { to: "base", c: [1.3, 1.0, 1.5] },
+  [C.grass]: { to: "base", c: [0.46, 0.5, 0.39] },
+  [C.grass2]: { to: "base", c: [0.5, 0.56, 0.4] },
+  [C.crop1]: { to: "base", c: [1.5, 1.0, 1.2] },
+  [C.crop2]: { to: "base", c: [0.55, 0.75, 0.5] },
+  [C.crop3]: { to: "base", c: [1.5, 0.8, 1.6] },
+  [C.river]: { to: "base", c: [1.4, 1.0, 1.4] },
+};
+const SURFACE_OTHER: { to: Bucket; c: Tint } = { to: "base", c: [0.46, 0.5, 0.39] };
+
 /** Paint a rectangle with non-overlapping cells: breakpoints from the layer edges, highest priority wins per cell. */
-function paintCells(gb: GeoBuilder, b: Rect, layers: Layer[], base: number, y = 0): void {
+function paintCells(k: Ctx, b: Rect, layers: Layer[], base: number, y = 0): void {
   const xs = new Set<number>([b.x0, b.x1]);
   const zs = new Set<number>([b.z0, b.z1]);
   for (const l of layers) {
@@ -94,7 +137,7 @@ function paintCells(gb: GeoBuilder, b: Rect, layers: Layer[], base: number, y = 
         col = l.color;
         pri = l.pri;
       }
-      gb.flat(X[i], Z[j], X[i + 1], Z[j + 1], y, col);
+      k.flat(X[i], Z[j], X[i + 1], Z[j + 1], y, col);
     }
   }
 }
@@ -103,6 +146,8 @@ const grow = (r: Rect, d: number): Rect => ({ x0: r.x0 - d, x1: r.x1 + d, z0: r.
 
 class Ctx {
   base = new GeoBuilder();
+  road = new GeoBuilder();
+  walk = new GeoBuilder();
   bldg = new GeoBuilder();
   detail = new GeoBuilder();
   signs = new GeoBuilder();
@@ -111,37 +156,74 @@ class Ctx {
   boxes: BoxCollider[] = [];
   meshes: MeshCollider[] = [];
   ground: Rect[] = [];
+  trees: TreePlace[] = [];
+  propList: PropPlace[] = [];
   buildings = 0;
   props = 0;
+
+  private pick(color: number): { gb: GeoBuilder; c: Tint } {
+    const s = SURFACE[color] ?? SURFACE_OTHER;
+    return { gb: s.to === "road" ? this.road : s.to === "walk" ? this.walk : this.base, c: s.c };
+  }
+
+  /** a flat ground rectangle of one of the surface colours (goes to the mesh of that surface) */
+  flat(x0: number, z0: number, x1: number, z1: number, y: number, color: number): void {
+    const s = this.pick(color);
+    s.gb.flat(x0, z0, x1, z1, y, s.c);
+  }
+
+  /** a ground quad in world coordinates (outside any rotated frame): the texture tiles every 8 m */
+  quad(p: [number, number, number], q: [number, number, number], r: [number, number, number], t: [number, number, number], color: number): void {
+    const s = this.pick(color);
+    s.gb.quad(p, q, r, t, s.c, [p[0] / 8, p[2] / 8, q[0] / 8, q[2] / 8, r[0] / 8, r[2] / 8, t[0] / 8, t[2] / 8]);
+  }
+
+  tri(p: [number, number, number], q: [number, number, number], r: [number, number, number], color: number): void {
+    const s = this.pick(color);
+    s.gb.tri(p, q, r, s.c, [p[0] / 8, p[2] / 8, q[0] / 8, q[2] / 8, r[0] / 8, r[2] / 8]);
+  }
 }
 
+/** Build the tile in one go (the first tiles, tests). */
 export function buildTile(spec: TileSpec, L: Layout, atlas: SignAtlas): TileBuild {
+  const it = buildTileSteps(spec, L, atlas);
+  for (;;) {
+    const r = it.next();
+    if (r.done) return r.value;
+  }
+}
+
+/** Build the tile in steps: every yield is a point where the caller may stop for this frame and go on in the next. */
+export function* buildTileSteps(spec: TileSpec, L: Layout, atlas: SignAtlas): Generator<void, TileBuild> {
   const k = new Ctx();
   const rand = rng(spec.seed);
   const bounds: Rect = { x0: spec.x0, x1: spec.x0 + TILE, z0: spec.z0, z1: spec.z0 + TILE };
   switch (spec.kind) {
     case "city":
-      city(k, spec, L, rand, bounds);
+      yield* city(k, spec, L, rand, bounds);
       break;
     case "plaza":
-      plaza(k, spec, rand, bounds);
+      yield* plaza(k, spec, rand, bounds);
       break;
     case "highway":
-      highway(k, spec, L, rand, bounds);
+      yield* highway(k, spec, L, rand, bounds);
       break;
     case "bridge":
-      bridge(k, spec, rand, bounds);
+      yield* bridge(k, spec, rand, bounds);
       break;
     case "airfield":
-      airfield(k, spec, rand, bounds);
+      yield* airfield(k, spec, rand, bounds);
       break;
     default:
-      field(k, spec, rand, bounds);
+      yield* field(k, spec, rand, bounds);
   }
   signsFor(k, spec, L, atlas);
+  yield;
   const g = (b: GeoBuilder): THREE.BufferGeometry | null => (b.empty ? null : b.build());
   return {
     base: g(k.base),
+    road: g(k.road),
+    walk: g(k.walk),
     bldg: g(k.bldg),
     detail: g(k.detail),
     signs: g(k.signs),
@@ -150,21 +232,26 @@ export function buildTile(spec: TileSpec, L: Layout, atlas: SignAtlas): TileBuil
     boxes: k.boxes,
     meshes: k.meshes,
     ground: k.ground,
+    trees: k.trees,
+    props: k.propList,
     stats: { buildings: k.buildings, props: k.props },
   };
 }
 
 // ------------------------------------------------------------------------------------------------ props
 
+/** A tree: only its place is recorded (drawn as a model by render/vegetation.ts). It takes the same random numbers as the old procedural tree, so the rest of the tile keeps its layout. */
 function tree(k: Ctx, x: number, z: number, rand: () => number, scale = 1): void {
-  const d = k.detail;
-  d.cyl(x, 0, z, 0.2 * scale, 2.3 * scale, C.trunk, 5);
-  const col = LEAVES[Math.floor(rand() * LEAVES.length)];
-  if (rand() < 0.35) {
-    d.cone(x, 1.6 * scale, z, 1.5 * scale, 4.6 * scale, col, 6);
-  } else {
-    d.blob(x, 3.6 * scale, z, (1.5 + rand() * 0.7) * scale, col, 1.15);
-  }
+  const v = rand();
+  if (!(rand() < 0.35)) rand();
+  // (the old trees were ~5 m tall; the models are 10-20 m: scaled down to fit the district's small streets)
+  k.trees.push({ x, z, s: scale * 0.5, v });
+  k.props++;
+}
+
+/** Street furniture standing on a pavement: rot faces the road. */
+function prop(k: Ctx, kind: PropKind, x: number, z: number, rot: number, s = 1): void {
+  k.propList.push({ kind, x, z, rot, s });
   k.props++;
 }
 
@@ -233,14 +320,15 @@ function dashes(k: Ctx, axis: "x" | "z", a: number, b: number, c: number, color:
 
 // ------------------------------------------------------------------------------------------------ city
 
-function city(k: Ctx, t: TileSpec, L: Layout, rand: () => number, b: Rect): void {
+function* city(k: Ctx, t: TileSpec, L: Layout, rand: () => number, b: Rect): Generator<void> {
   const h = ROAD.cityHalf;
   const sw = ROAD.sidewalk;
   const layers: Layer[] = [];
   for (const r of t.road) layers.push({ r: grow(r, sw), color: C.sidewalk, pri: 1 });
   for (const r of t.road) layers.push({ r, color: C.asphalt, pri: 3 });
-  paintCells(k.base, b, layers, C.lot);
+  paintCells(k, b, layers, C.lot);
   k.ground.push(b);
+  yield;
 
   // ---- buildings in the four quadrants
   const inner = h + sw + 0.8;
@@ -268,6 +356,7 @@ function city(k: Ctx, t: TileSpec, L: Layout, rand: () => number, b: Rect): void
         building(k, cx, cz, w, d, ht, rand);
       }
     }
+    yield;
   }
 
   // ---- roads: markings, crosswalks, lamps, trees
@@ -313,6 +402,19 @@ function city(k: Ctx, t: TileSpec, L: Layout, rand: () => number, b: Rect): void
       const x = t.cx + dx * p + px * side * sideOff;
       const z = t.cz + dz * p + pz * side * sideOff;
       lamp(k, x, z, px * side, pz * side);
+    }
+    // street furniture on the pavement (random numbers from the tile seed, not from rand: the layout above does not change)
+    const pr = rng(t.seed ^ (dx * 7 + dz * 13 + 0x51ed27));
+    const face = Math.atan2(-dz, dx);
+    for (let p = 20; p < end - 6; p += 26) {
+      const side = pr() < 0.5 ? 1 : -1;
+      const px = -dz;
+      const pz = dx;
+      const q = pr();
+      const toRoad = Math.atan2(-px * side, -pz * side);
+      if (q < 0.34) prop(k, "bench", t.cx + dx * p + px * side * (h + sw * 0.78), t.cz + dz * p + pz * side * (h + sw * 0.78), toRoad);
+      else if (q < 0.62) prop(k, "hydrant", t.cx + dx * p + px * side * (h + 0.7), t.cz + dz * p + pz * side * (h + 0.7), face);
+      else if (q < 0.8) prop(k, "box", t.cx + dx * p + px * side * (h + sw * 0.8), t.cz + dz * p + pz * side * (h + sw * 0.8), toRoad);
     }
     for (let p = 30; p < end - 4; p += 22) {
       const side = rand() < 0.5 ? 1 : -1;
@@ -387,7 +489,7 @@ function vdisc(gb: GeoBuilder, cx: number, cy: number, cz: number, r: number, co
 function madrasa(k: Ctx, W: number, withBigDome: boolean, sun: boolean): void {
   const dpt = 15;
   const H = 13;
-  k.bldg.box(0, 0, -dpt / 2, W, H, dpt, SAND, { windows: true, top: SAND2 });
+  k.bldg.box(0, 0, -dpt / 2, W, H, dpt, SAND, { top: SAND2 });
   // pishtaq
   const pw = 22;
   const ph = 22;
@@ -444,10 +546,11 @@ function localBox(x: number, y: number, z: number, hx: number, hy: number, hz: n
   return box;
 }
 
-function plaza(k: Ctx, t: TileSpec, rand: () => number, b: Rect): void {
+function* plaza(k: Ctx, t: TileSpec, rand: () => number, b: Rect): Generator<void> {
   const layers: Layer[] = [{ r: { x0: b.x0 + 3, x1: b.x1 - 3, z0: b.z0 + 3, z1: b.z1 }, color: C.stone, pri: 1 }];
-  paintCells(k.base, b, layers, C.lot);
+  paintCells(k, b, layers, C.lot);
   k.ground.push(b);
+  yield;
   const d = k.detail;
   // inlaid paving: a ring and a star in the middle of the square
   d.ring(t.cx, 0.02, t.cz + 18, 10, 11.2, 0x2b5f8a, 40);
@@ -462,11 +565,19 @@ function plaza(k: Ctx, t: TileSpec, rand: () => number, b: Rect): void {
     _frame = null;
   };
   place(t.cx, b.z0 + 22, 0, 60, true, false);
+  yield;
   place(b.x0 + 22, b.z0 + 62, Math.PI / 2, 52, false, false);
+  yield;
   place(b.x1 - 22, b.z0 + 62, -Math.PI / 2, 52, false, true);
+  yield;
   // trees and lamps at the open side
   for (const x of [b.x0 + 14, b.x1 - 14]) for (const z of [b.z1 - 14, b.z1 - 40]) tree(k, x, z, rand, 0.9);
   for (const x of [t.cx - 30, t.cx + 30]) lamp(k, x, b.z1 - 6, 0, 1);
+  // benches and planters along the square (they face the madrasas)
+  for (const x of [t.cx - 46, t.cx + 46]) {
+    prop(k, "bench", x, t.cz + 44, Math.PI, 1);
+    prop(k, "planter", x * 0.8 + t.cx * 0.2, t.cz + 50, 0, 1.3);
+  }
 }
 
 // ------------------------------------------------------------------------------------------------ highway + bridge
@@ -485,16 +596,18 @@ function farmland(k: Ctx, layers: Layer[], b: Rect, rand: () => number, avoid: R
   }
 }
 
-function highway(k: Ctx, t: TileSpec, L: Layout, rand: () => number, b: Rect): void {
+function* highway(k: Ctx, t: TileSpec, L: Layout, rand: () => number, b: Rect): Generator<void> {
   const hh = ROAD.hwHalf;
   const layers: Layer[] = [];
   const road = t.road[0];
   const roadRect: Rect = { x0: road.x0, x1: road.x1, z0: t.cz - hh, z1: t.cz + hh };
   farmland(k, layers, b, rand, roadRect);
   layers.push({ r: roadRect, color: C.asphalt, pri: 3 });
-  paintCells(k.base, b, layers, C.grass);
+  paintCells(k, b, layers, C.grass);
   k.ground.push(b);
+  yield;
   highwayFurniture(k, t, b, rand, roadRect);
+  yield;
   // trees + poles in the fields
   for (let i = 0; i < 8; i++) {
     const x = b.x0 + 8 + rand() * (TILE - 16);
@@ -507,8 +620,8 @@ function highway(k: Ctx, t: TileSpec, L: Layout, rand: () => number, b: Rect): v
     for (const sz of [-1, 1]) {
       const zin = t.cz + sz * ROAD.cityHalf;
       const zout = t.cz + sz * hh;
-      k.detail.tri([b.x0, 0.03, zin], [b.x0, 0.03, zout], [b.x0 + 36, 0.03, zout], C.grass);
-      k.detail.tri([b.x0, 0.03, zin], [b.x0 + 36, 0.03, zout], [b.x0, 0.03, zout], C.grass);
+      k.tri([b.x0, 0.03, zin], [b.x0, 0.03, zout], [b.x0 + 36, 0.03, zout], C.grass);
+      k.tri([b.x0, 0.03, zin], [b.x0 + 36, 0.03, zout], [b.x0, 0.03, zout], C.grass);
     }
     // a roadside police post (DPS) at the city exit
     const px = b.x0 + 14;
@@ -553,23 +666,23 @@ function highwayFurniture(k: Ctx, t: TileSpec, b: Rect, rand: () => number, r: R
   void b;
 }
 
-function bridge(k: Ctx, t: TileSpec, rand: () => number, b: Rect): void {
+function* bridge(k: Ctx, t: TileSpec, rand: () => number, b: Rect): Generator<void> {
   const hh = ROAD.hwHalf;
   const x0 = b.x0;
   const x1 = b.x1;
   const rx0 = t.cx - RIVER_HALF;
   const rx1 = t.cx + RIVER_HALF;
   // ground: the two banks (grass) and the river bed
-  k.base.flat(x0, b.z0, rx0, b.z1, 0, C.grass);
-  k.base.flat(rx1, b.z0, x1, b.z1, 0, C.grass);
-  k.base.flat(rx0, b.z0, rx1, b.z1, -3, C.river);
+  k.flat(x0, b.z0, rx0, b.z1, 0, C.grass);
+  k.flat(rx1, b.z0, x1, b.z1, 0, C.grass);
+  k.flat(rx0, b.z0, rx1, b.z1, -3, C.river);
   k.ground.push({ x0, x1: rx0, z0: b.z0, z1: b.z1 }, { x0: rx1, x1, z0: b.z0, z1: b.z1 });
   k.boxes.push({ x: t.cx, y: -3.5, z: t.cz, hx: RIVER_HALF + 0.5, hy: 0.5, hz: TILE / 2, yaw: 0 });
   // bank walls
   for (const [x, nx] of [[rx0, 1], [rx1, -1]] as [number, number][]) {
     void nx;
-    k.base.quad([x, -3, b.z0], [x, -3, b.z1], [x, 0, b.z1], [x, 0, b.z0], 0x7d7767);
-    k.base.quad([x, 0, b.z0], [x, 0, b.z1], [x, -3, b.z1], [x, -3, b.z0], 0x7d7767);
+    k.detail.quad([x, -3, b.z0], [x, -3, b.z1], [x, 0, b.z1], [x, 0, b.z0], 0x7d7767);
+    k.detail.quad([x, 0, b.z0], [x, 0, b.z1], [x, -3, b.z1], [x, -3, b.z0], 0x7d7767);
   }
   // water surface (own mesh, translucent)
   k.water.flat(rx0 - 2, b.z0, rx1 + 2, b.z1, -0.9, 0x2a6f97);
@@ -590,8 +703,9 @@ function bridge(k: Ctx, t: TileSpec, rand: () => number, b: Rect): void {
     const dd = n + i + 1;
     // collision strip (both windings so rays hit from above regardless)
     idx.push(a, c, bb, bb, c, dd);
-    k.base.quad([rows[i], y(rows[i]), t.cz - hh], [rows[i], y(rows[i]), t.cz + hh], [rows[i + 1], y(rows[i + 1]), t.cz + hh], [rows[i + 1], y(rows[i + 1]), t.cz - hh], C.asphalt);
+    k.quad([rows[i], y(rows[i]), t.cz - hh], [rows[i], y(rows[i]), t.cz + hh], [rows[i + 1], y(rows[i + 1]), t.cz + hh], [rows[i + 1], y(rows[i + 1]), t.cz - hh], C.asphalt);
   }
+  yield;
   k.meshes.push({ verts: new Float32Array(verts), idx: new Uint32Array(idx) });
   // side walls (embankment) under the deck, railings on top
   const d = k.detail;
@@ -653,11 +767,12 @@ function cone(k: Ctx, x: number, z: number): void {
   k.detail.box(x, 0, z, 0.55, 0.04, 0.55, 0xf26a1b);
 }
 
-function airfield(k: Ctx, t: TileSpec, rand: () => number, b: Rect): void {
+function* airfield(k: Ctx, t: TileSpec, rand: () => number, b: Rect): Generator<void> {
   const layers: Layer[] = [];
   for (const r of t.road) layers.push({ r, color: r.surface === "concrete" ? C.concrete : C.asphalt, pri: 2 });
-  paintCells(k.base, b, layers, C.grass2);
+  paintCells(k, b, layers, C.grass2);
   k.ground.push(b);
+  yield;
   const d = k.detail;
   const idc = `${t.c},${t.r}`;
   const x0 = b.x0;
@@ -726,7 +841,7 @@ function airfield(k: Ctx, t: TileSpec, rand: () => number, b: Rect): void {
 
 // ------------------------------------------------------------------------------------------------ open countryside
 
-function field(k: Ctx, t: TileSpec, rand: () => number, b: Rect): void {
+function* field(k: Ctx, t: TileSpec, rand: () => number, b: Rect): Generator<void> {
   const layers: Layer[] = [];
   const cols = [C.crop1, C.crop2, C.crop3, C.grass2];
   for (let i = 0; i < 3; i++) {
@@ -736,10 +851,14 @@ function field(k: Ctx, t: TileSpec, rand: () => number, b: Rect): void {
     const z = b.z0 + 4 + rand() * (TILE - d - 8);
     layers.push({ r: { x0: x, x1: x + w, z0: z, z1: z + d }, color: cols[Math.floor(rand() * cols.length)], pri: 1 });
   }
-  paintCells(k.base, b, layers, C.grass);
+  paintCells(k, b, layers, C.grass);
   k.ground.push(b);
+  yield;
   const n = 4 + Math.floor(rand() * 6);
   for (let i = 0; i < n; i++) tree(k, b.x0 + 4 + rand() * (TILE - 8), b.z0 + 4 + rand() * (TILE - 8), rand, 0.8 + rand() * 0.6);
+  // a few shrubs in the field (random numbers from the tile seed: the layout does not change)
+  const pr = rng(t.seed ^ 0x2545f491);
+  for (let i = 0; i < 3; i++) prop(k, "shrub", b.x0 + 6 + pr() * (TILE - 12), b.z0 + 6 + pr() * (TILE - 12), pr() * 6, 1.2 + pr() * 0.8);
   if (hash2(t.c, t.r) < 0.25) {
     const hx = b.x0 + 30 + rand() * 60;
     const hz = b.z0 + 30 + rand() * 60;

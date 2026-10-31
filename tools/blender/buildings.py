@@ -1,7 +1,7 @@
 """Harakat o'yinlari - skyscrapers and city buildings for the open city, built in Blender.
 
-    blender -b --factory-startup --python tools/blender/buildings.py -- [--out public/models/poyga/buildings]
-            [--tex public/textures/poyga/facades] [--trees public/textures/poyga/trees] [--preview DIR]
+    blender -b --factory-startup --python tools/blender/buildings.py -- [--out assets-src/models/poyga/buildings]
+            [--tex assets-src/textures/poyga/facades] [--trees assets-src/textures/poyga/trees] [--preview DIR]
 
 Towers are real geometry (piers, recessed glass, spandrels, setbacks, cornices, twisted lofts) with a handful of
 role materials (glass, stone, metal, concrete, accent, light) so the game can share five shaders:
@@ -671,9 +671,9 @@ def preview(d, texdir, treetex):
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="public/models/poyga/buildings")
-    ap.add_argument("--tex", default="public/textures/poyga/facades")
-    ap.add_argument("--trees", default="public/textures/poyga/trees")
+    ap.add_argument("--out", default="assets-src/models/poyga/buildings")
+    ap.add_argument("--tex", default="assets-src/textures/poyga/facades")
+    ap.add_argument("--trees", default="assets-src/textures/poyga/trees")
     ap.add_argument("--preview", default="")
     ap.add_argument("--no-export", action="store_true")
     a = ap.parse_args(argv)

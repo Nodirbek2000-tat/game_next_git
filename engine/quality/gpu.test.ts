@@ -20,6 +20,8 @@ describe("resolveInitialLevel", () => {
   });
   it("integrated GPUs and phones never start on high", () => {
     expect(resolveInitialLevel("auto", dev({ gpu: "ANGLE (Intel, Intel(R) UHD Graphics)" })).level).toBe("medium");
+    expect(resolveInitialLevel("auto", dev({ gpu: "ANGLE (AMD, AMD Radeon(TM) Graphics Direct3D11)" })).level).toBe("medium");
+    expect(resolveInitialLevel("auto", dev({ gpu: "AMD Radeon Vega 8 Graphics" })).level).toBe("medium");
     expect(resolveInitialLevel("auto", dev({ isMobile: true })).level).toBe("low");
   });
   it("starts lower on weak CPUs, little memory and software renderers", () => {

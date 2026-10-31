@@ -542,10 +542,11 @@ describe("input mapping", () => {
     expect(toggles).toBe(2);
   });
 
-  it("kids mode: automatic gas unless braking; keyboard and gamepad override", () => {
+  it("kids mode has no automatic gas (it is the knee, as everywhere); keyboard and gamepad override", () => {
     const kids = ready(true);
-    expect(drive(kids, body(), 0.5).gas).toBeCloseTo(CONTROL_DEFAULTS.kidsGas, 1);
-    expect(drive(kids, body({ brake: 1 }), 0.5).gas).toBeLessThan(0.05);
+    expect(drive(kids, body(), 0.5).gas).toBe(0);
+    expect(drive(kids, body({ gas: 1 }), 0.5).gas).toBeGreaterThan(0.9);
+    expect(drive(kids, body({ brake: 1 }), 0.5).gas).toBe(0);
     const m = new InputMapper();
     const keys = new Set(["ArrowUp", "ArrowRight"]);
     const out = drive(m, null, 0.6, 0, keys);
@@ -617,6 +618,102 @@ describe("missions", () => {
     expect(r.allDone).toBe(true);
     expect(r.completed).toBe(2);
     expect(r.failed).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------- the gas stays 0 until a knee is lifted
+/** deterministic noise in -1..1 */
+function noise(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (Math.imul(a, 1664525) + 1013904223) >>> 0;
+    return (a / 4294967296) * 2 - 1;
+  };
+}
+
+/** the same body with every knee / ankle reading moved by up to `amp` px (a jittery pose model) */
+function jittered(b: BodyLike, amp: number, rnd: () => number): BodyLike {
+  const lm = b.lm.map((p) => ({ ...p }));
+  for (const i of [25, 26, 27, 28]) lm[i].y += rnd() * amp;
+  return { ...b, lm };
+}
+
+describe("the pedals never creep", () => {
+  const cases: [string, boolean, boolean][] = [
+    ["standing", false, false],
+    ["standing, kids", false, true],
+    ["seated", true, false],
+    ["seated, kids", true, true],
+  ];
+  for (const [name, seated, kids] of cases) {
+    it(`${name}: gas and brake are exactly 0 at rest and with small jitter, in every frame`, () => {
+      const m = ready(kids, seated);
+      const rest = seated ? seatedBody(0, 0) : body();
+      const rnd = noise(7);
+      const out = newControls();
+      let worst = 0;
+      // 1 s of a perfectly still body, then 25 s of jitter (2.5 px of 160 = 1.6 % of a body scale, under the dead zone of both modes)
+      for (let i = 0; i < 26 * 60; i++) {
+        m.update(1 / 60, i < 60 ? rest : jittered(rest, 2.5, rnd), K, null, 0, 720, out);
+        worst = Math.max(worst, out.gas, out.brake);
+        expect(out.legsReady).toBe(true);
+        expect(out.gas).toBe(0);
+        expect(out.brake).toBe(0);
+      }
+      expect(worst).toBe(0);
+    });
+
+    it(`${name}: a body that is simply not there reads 0, and a lifted knee still works afterwards`, () => {
+      const m = ready(kids, seated);
+      expect(drive(m, null, 1).gas).toBe(0);
+      const back = drive(m, seated ? seatedBody(0, 0) : body(), 0.5);
+      expect(back.gas).toBe(0);
+    });
+  }
+
+  it("a pedal that is released falls to exactly 0 (the smoothing leaves no tail)", () => {
+    const m = ready();
+    expect(drive(m, body({ gas: 1 }), 0.5).gas).toBeGreaterThan(0.9);
+    expect(drive(m, body(), 1.2).gas).toBe(0);
+    expect(drive(m, body({ brake: 1 }), 0.5).brake).toBeGreaterThan(0.9);
+    expect(drive(m, body(), 1.2).brake).toBe(0);
+  });
+
+  it("seated: a shifting thigh (about a fifth of a pedal) stays 0, a clear lift gives the gas", () => {
+    const m = ready(false, true);
+    const out = newControls();
+    let engaged = false;
+    // the right knee drifts up and down by 10 px (0.06 body scales, 21 % of a full seated pedal) over 3 s, many times
+    for (let i = 0; i < 20 * 60; i++) {
+      const lift = (5 + 5 * Math.sin((i / 60) * ((Math.PI * 2) / 3))) / 48;
+      m.update(1 / 60, seatedBody(lift, 0), K, null, 0, 720, out);
+      if (m.pedals.gas > 0) engaged = true;
+      expect(out.gas).toBe(0);
+    }
+    // (the reader alone would have fired on that shift: this is what the gate is for)
+    expect(engaged).toBe(true);
+    expect(drive(m, seatedBody(0.6, 0), 0.5).gas).toBeGreaterThan(0.3);
+    expect(drive(m, seatedBody(1, 0), 0.5).gas).toBeGreaterThan(0.9);
+    expect(drive(m, seatedBody(0, 0), 0.8).gas).toBe(0);
+  });
+
+  it("a gamepad whose resting trigger reads a little pressed gives no gas (the body pedals stay in charge)", () => {
+    const m = ready();
+    const out = newControls();
+    const worn = { axes: [0.02, 0], buttons: Array.from({ length: 8 }, (_, k) => ({ value: k === 7 ? 0.1 : 0, pressed: false })) };
+    for (let i = 0; i < 120; i++) m.update(1 / 60, body(), K, worn, 0, 720, out);
+    expect(out.gas).toBe(0);
+    expect(out.source).toBe("body");
+    const full = { axes: [0, 0], buttons: Array.from({ length: 8 }, (_, k) => ({ value: k === 7 ? 1 : 0, pressed: false })) };
+    for (let i = 0; i < 60; i++) m.update(1 / 60, body(), K, full, 0, 720, out);
+    expect(out.gas).toBeGreaterThan(0.95);
+    expect(out.source).toBe("pad");
+  });
+
+  it("the standing mode keeps the reader's own values (no gate): poyga's pedals are unchanged", () => {
+    const m = ready();
+    expect(drive(m, body({ gas: 0.5 }), 0.5).gas).toBeCloseTo(0.5, 1);
+    expect(CONTROL_DEFAULTS.pedalGate).toBe(0);
   });
 });
 

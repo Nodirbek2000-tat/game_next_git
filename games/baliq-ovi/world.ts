@@ -3,9 +3,12 @@
 
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { texUrl } from "@/engine/quality/assetUrl";
+import type { QualityLevel } from "@/engine/types";
 import { bedDepth, shoreDistance, TIMES_OF_DAY, type LocationConfig, type TimeOfDayPreset } from "./locations";
+import { LOD, liveShare, type Lod } from "./lod";
 import { makeCloudTexture, makeWoodTexture, seededRng } from "./textures";
-import { applyUnderwaterTint, L_UNDER, L_WORLD, type TintUniforms } from "./water";
+import { applyUnderwaterTint, L_NOREFL, L_UNDER, L_WORLD, type TintUniforms } from "./water";
 import type { TimeOfDay } from "./species";
 
 export const BRIDGE = { z0: 2.4, z1: 11, halfW: 2.1, deckY: 0.55 };
@@ -92,8 +95,11 @@ function buildTerrain(loc: LocationConfig): { bed: THREE.BufferGeometry; land: T
 
 // ---------------------------------------------------------------- ground material
 
-/** Poly Haven CC0 photo textures (leafy_grass, river_small_rocks, brown_mud_02) blended by the "splat" attribute. */
-function groundMaterial(tex: { [k: string]: THREE.Texture }): THREE.MeshStandardMaterial {
+/**
+ * Poly Haven CC0 photo textures (leafy_grass, river_small_rocks, brown_mud_02) blended by the "splat" attribute.
+ * `lite` (low level): the three colour maps only, one grass tile, no normal maps (7 texture reads -> 3).
+ */
+function groundMaterial(tex: { [k: string]: THREE.Texture }, lite: boolean): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0, envMapIntensity: 0.45 });
   m.onBeforeCompile = (sh) => {
     for (const k in tex) sh.uniforms[k] = { value: tex[k] };
@@ -104,41 +110,41 @@ function groundMaterial(tex: { [k: string]: THREE.Texture }): THREE.MeshStandard
     sh.fragmentShader = sh.fragmentShader
       .replace(
         "#include <common>",
-        "#include <common>\nvarying vec3 vSplat; varying vec3 vGp; varying vec3 vGn;\nuniform sampler2D tGrass, tPeb, tMud, nGrass, nPeb, nMud;",
+        `#include <common>\nvarying vec3 vSplat; varying vec3 vGp; varying vec3 vGn;\nuniform sampler2D tGrass, tPeb, tMud${lite ? ";" : ", nGrass, nPeb, nMud;"}`,
       )
       .replace(
         "#include <map_fragment>",
         `vec2 tp = vGp.xz;
   vec3 gw = vSplat/max(1e-3, vSplat.x + vSplat.y + vSplat.z);
-  vec3 cG = mix(texture2D(tGrass, tp/3.1).rgb, texture2D(tGrass, tp/11.7 + 0.37).rgb, 0.45);
+  vec3 cG = ${lite ? "texture2D(tGrass, tp/3.1).rgb" : "mix(texture2D(tGrass, tp/3.1).rgb, texture2D(tGrass, tp/11.7 + 0.37).rgb, 0.45)"};
   vec3 cP = texture2D(tPeb, tp/2.3).rgb;
   vec3 cM = texture2D(tMud, tp/3.6).rgb;
   diffuseColor.rgb *= cG*gw.x + cP*gw.y + cM*gw.z;`,
-      )
-      .replace(
-        "#include <normal_fragment_maps>",
-        `vec3 nb = (texture2D(nGrass, tp/3.1).xyz*gw.x + texture2D(nPeb, tp/2.3).xyz*gw.y + texture2D(nMud, tp/3.6).xyz*gw.z)*2. - 1.;
+      );
+    if (lite) return;
+    sh.fragmentShader = sh.fragmentShader.replace(
+      "#include <normal_fragment_maps>",
+      `vec3 nb = (texture2D(nGrass, tp/3.1).xyz*gw.x + texture2D(nPeb, tp/2.3).xyz*gw.y + texture2D(nMud, tp/3.6).xyz*gw.z)*2. - 1.;
   vec3 gwn = normalize(vGn*max(nb.z, 0.2) + vec3(nb.x, 0., -nb.y)*0.85);
   normal = normalize((viewMatrix*vec4(gwn, 0.)).xyz);`,
-      );
+    );
   };
-  m.customProgramCacheKey = () => "baliq-ground";
+  m.customProgramCacheKey = () => (lite ? "baliq-ground-lite" : "baliq-ground");
   return m;
 }
 
-function loadGroundTextures(aniso: number): { [k: string]: THREE.Texture } {
+function loadGroundTextures(lod: Lod, level: QualityLevel): { [k: string]: THREE.Texture } {
   const L = new THREE.TextureLoader();
   const t = (f: string, srgb: boolean): THREE.Texture => {
-    const x = L.load(`/textures/baliq-ovi/ground/${f}.jpg`);
+    const x = L.load(texUrl(`/textures/baliq-ovi/ground/${f}`, level));
     x.wrapS = x.wrapT = THREE.RepeatWrapping;
-    x.anisotropy = aniso;
+    x.anisotropy = lod.aniso;
     if (srgb) x.colorSpace = THREE.SRGBColorSpace;
     return x;
   };
-  return {
-    tGrass: t("leafy_grass_diff", true), tPeb: t("river_small_rocks_diff", true), tMud: t("brown_mud_02_diff", true),
-    nGrass: t("leafy_grass_nor_gl", false), nPeb: t("river_small_rocks_nor_gl", false), nMud: t("brown_mud_02_nor_gl", false),
-  };
+  const diff = { tGrass: t("leafy_grass_diff", true), tPeb: t("river_small_rocks_diff", true), tMud: t("brown_mud_02_diff", true) };
+  if (lod.lite) return diff;
+  return { ...diff, nGrass: t("leafy_grass_nor_gl", false), nPeb: t("river_small_rocks_nor_gl", false), nMud: t("brown_mud_02_nor_gl", false) };
 }
 
 // ---------------------------------------------------------------- mountains
@@ -190,16 +196,14 @@ export function mountainHeight(x: number, z: number): number {
   return (14 + 22 * hills) * smooth(380, 470, r) + ramp * saddle * (30 + 300 * big * big);
 }
 
-function buildMountains(level: "high" | "medium" | "low"): THREE.BufferGeometry {
-  const NA = level === "high" ? 560 : level === "medium" ? 420 : 280;
-  const NR = level === "high" ? 72 : level === "medium" ? 56 : 40;
+function buildMountains({ na: NA, nr: NR, rMax }: Lod["mtn"]): THREE.BufferGeometry {
   const pos: number[] = [];
   const ind: number[] = [];
   const A0 = -2.1;
   const A1 = 2.1;
   for (let j = 0; j <= NR; j++) {
     const t = j / NR;
-    const r = 430 + 1150 * t * t;
+    const r = 430 + (rMax - 430) * t * t;
     for (let i = 0; i <= NA; i++) {
       const az = A0 + ((A1 - A0) * i) / NA;
       const x = Math.sin(az) * r;
@@ -240,24 +244,24 @@ function buildMountains(level: "high" | "medium" | "low"): THREE.BufferGeometry 
 }
 
 /** Far ranges: CC0 photo textures (Blender-rendered fir canopy, Poly Haven cliff_side / aerial_rocks_02 /
- * snow_field_aerial / aerial_grass_rock) blended by the "cover" attribute; rock is projected triplanar. */
-function mountainMaterial(aniso: number, haze: { value: THREE.Color }, disposables: { dispose(): void }[]): THREE.MeshStandardMaterial {
+ * snow_field_aerial / aerial_grass_rock) blended by the "cover" attribute; rock is projected triplanar.
+ * `lite` (low level): rock from two planar reads, no ragged forest edge, no macro variation, no normal maps (11 reads -> 5). */
+function mountainMaterial(lod: Lod, haze: { value: THREE.Color }, disposables: { dispose(): void }[], level: QualityLevel): THREE.MeshStandardMaterial {
+  const lite = lod.lite;
   const L = new THREE.TextureLoader();
   const t = (f: string, srgb = true): THREE.Texture => {
-    const x = L.load(`/textures/baliq-ovi/mtn/${f}.jpg`);
+    const x = L.load(texUrl(`/textures/baliq-ovi/mtn/${f}`, level));
     x.wrapS = x.wrapT = THREE.RepeatWrapping;
-    x.anisotropy = aniso;
+    x.anisotropy = lod.aniso;
     if (srgb) x.colorSpace = THREE.SRGBColorSpace;
     disposables.push(x);
     return x;
   };
-  const tex = {
-    tForest: t("forest_canopy"), tCliff: t("cliff_side_diff"), tRocks: t("aerial_rocks_02_diff"), tSnow: t("snow_field_aerial_diff"), tMeadow: t("aerial_grass_rock_diff"),
-    nCliff: t("cliff_side_nor_gl", false), nRocks: t("aerial_rocks_02_nor_gl", false),
-  };
+  const diff = { tForest: t("forest_canopy"), tCliff: t("cliff_side_diff"), tRocks: t("aerial_rocks_02_diff"), tSnow: t("snow_field_aerial_diff"), tMeadow: t("aerial_grass_rock_diff") };
+  const tex: { [k: string]: THREE.Texture } = lite ? diff : { ...diff, nCliff: t("cliff_side_nor_gl", false), nRocks: t("aerial_rocks_02_nor_gl", false) };
   const m = new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0, envMapIntensity: 0.6, fog: false });
   m.onBeforeCompile = (sh) => {
-    for (const k in tex) sh.uniforms[k] = { value: tex[k as keyof typeof tex] };
+    for (const k in tex) sh.uniforms[k] = { value: tex[k] };
     sh.uniforms.uHaze = haze;
     sh.vertexShader = sh.vertexShader
       .replace("#include <common>", "#include <common>\nattribute vec4 cover; varying vec4 vCover; varying vec3 vWp; varying vec3 vMn;")
@@ -266,11 +270,20 @@ function mountainMaterial(aniso: number, haze: { value: THREE.Color }, disposabl
     sh.fragmentShader = sh.fragmentShader
       .replace(
         "#include <common>",
-        "#include <common>\nvarying vec4 vCover; varying vec3 vWp; varying vec3 vMn; uniform vec3 uHaze;\nuniform sampler2D tForest, tCliff, tRocks, tSnow, tMeadow, nCliff, nRocks;",
+        `#include <common>\nvarying vec4 vCover; varying vec3 vWp; varying vec3 vMn; uniform vec3 uHaze;\nuniform sampler2D tForest, tCliff, tRocks, tSnow, tMeadow${lite ? ";" : ", nCliff, nRocks;"}`,
       )
       .replace(
         "#include <map_fragment>",
-        `vec3 mn = normalize(vMn);
+        lite
+          ? `vec3 mn = normalize(vMn);
+  vec3 cRock = mix(texture2D(tCliff, vWp.xz/34.).rgb, texture2D(tRocks, vWp.xz/26.).rgb, smoothstep(0.55, 0.9, abs(mn.y)));
+  vec3 cForest = texture2D(tForest, vWp.xz/46.).rgb*1.15;
+  vec3 cSnow = texture2D(tSnow, vWp.xz/40.).rgb;
+  vec3 cMeadow = texture2D(tMeadow, vWp.xz/55.).rgb;
+  vec4 cw = vCover;
+  cw /= max(1e-3, cw.x + cw.y + cw.z + cw.w);
+  diffuseColor.rgb = cForest*cw.x + cRock*cw.y + cSnow*cw.z + cMeadow*cw.w;`
+          : `vec3 mn = normalize(vMn);
   vec3 bw = pow(abs(mn), vec3(4.)); bw /= (bw.x + bw.y + bw.z);
   // large-scale variation hides the tiling
   float macro = 0.75 + 0.5*texture2D(tMeadow, vWp.xz/1900.).g;
@@ -286,20 +299,21 @@ function mountainMaterial(aniso: number, haze: { value: THREE.Color }, disposabl
   diffuseColor.rgb = (cForest*cw.x + cRock*macro*cw.y + cSnow*cw.z + cMeadow*macro*cw.w);`,
       )
       .replace(
-        "#include <normal_fragment_maps>",
-        `vec3 nr = (texture2D(nCliff, vWp.zy/34.).xyz*bw.x + texture2D(nCliff, vWp.xy/34.).xyz*bw.z + texture2D(nRocks, vWp.xz/26.).xyz*bw.y)*2. - 1.;
-  vec3 mwn = normalize(mn + (vec3(nr.x, 0., -nr.y)*bw.y + vec3(0., nr.y, nr.x)*bw.x + vec3(nr.x, nr.y, 0.)*bw.z)*(0.55*cw.y + 0.25));
-  normal = normalize((viewMatrix*vec4(mwn, 0.)).xyz);`,
-      )
-      .replace(
         "#include <tonemapping_fragment>",
         `float hd = length(vWp.xz - cameraPosition.xz);
   float hz = (1. - exp(-hd/1700.))*mix(1., 0.8, smoothstep(40., 320., vWp.y));
   gl_FragColor.rgb = mix(gl_FragColor.rgb, uHaze, clamp(hz, 0., 0.72));
 #include <tonemapping_fragment>`,
       );
+    if (lite) return;
+    sh.fragmentShader = sh.fragmentShader.replace(
+      "#include <normal_fragment_maps>",
+      `vec3 nr = (texture2D(nCliff, vWp.zy/34.).xyz*bw.x + texture2D(nCliff, vWp.xy/34.).xyz*bw.z + texture2D(nRocks, vWp.xz/26.).xyz*bw.y)*2. - 1.;
+  vec3 mwn = normalize(mn + (vec3(nr.x, 0., -nr.y)*bw.y + vec3(0., nr.y, nr.x)*bw.x + vec3(nr.x, nr.y, 0.)*bw.z)*(0.55*cw.y + 0.25));
+  normal = normalize((viewMatrix*vec4(mwn, 0.)).xyz);`,
+    );
   };
-  m.customProgramCacheKey = () => "baliq-mountains";
+  m.customProgramCacheKey = () => (lite ? "baliq-mountains-lite" : "baliq-mountains");
   return m;
 }
 
@@ -337,20 +351,8 @@ function colorVertices(g: THREE.BufferGeometry, hex: number): THREE.BufferGeomet
   return g.index ? g.toNonIndexed() : g;
 }
 
-export interface WorldQuality {
-  trees: number;
-  rocks: number;
-  weeds: number;
-  reeds: number;
-  pads: number;
-  clouds: number;
-  grass: number;
-}
-export const WORLD_COUNTS: Record<"high" | "medium" | "low", WorldQuality> = {
-  high: { trees: 560, rocks: 60, weeds: 150, reeds: 170, pads: 26, clouds: 14, grass: 420 },
-  medium: { trees: 360, rocks: 40, weeds: 90, reeds: 110, pads: 18, clouds: 10, grass: 220 },
-  low: { trees: 160, rocks: 18, weeds: 40, reeds: 40, pads: 10, clouds: 6, grass: 0 },
-};
+/** the sky dome radius as a share of the camera far plane */
+const SKY_OF_FAR = 0.92;
 
 const SKY_V = /* glsl */ `varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.); }`;
 const SKY_F = /* glsl */ `
@@ -395,6 +397,8 @@ export interface Spot {
   rot: number;
   /** variant pick 0..1 */
   k: number;
+  /** forest on the plain behind the far shore (billboards only) */
+  hill?: boolean;
 }
 
 export interface WorldObjects {
@@ -418,8 +422,16 @@ export interface WorldObjects {
   grassSpots: Spot[];
   /** wind sway for a material (instanced foliage) */
   sway(mat: THREE.Material, amp: number): void;
-  /** the photo sky + image lighting (loaded asynchronously; the gradient sky shows until then) */
-  loadSky(gl: THREE.WebGLRenderer, scene: THREE.Scene, onFog: (c: THREE.Color) => void): void;
+  /** the photo sky (loaded asynchronously; the gradient sky shows until then) */
+  loadSky(onFog: (c: THREE.Color) => void): void;
+  /** the photo as image light (HDR -> PMREM); null when it cannot be loaded. Nothing is applied yet. */
+  loadEnv(gl: THREE.WebGLRenderer): Promise<THREE.Texture | null>;
+  /** make `env` the scene's image light (the hemisphere light gives way to it) */
+  applyEnv(scene: THREE.Scene, env: THREE.Texture): void;
+  /** the level changed while playing: cheaper / richer counts of what was built, sky dome for the new far plane */
+  setLevel(now: QualityLevel): void;
+  /** the procedural cone trees, for when the fir models cannot be loaded */
+  showFallbackTrees(): void;
   /** replace the procedural bridge with a loaded model */
   setBridgeModel(o: THREE.Object3D): void;
   /** instanced parts that a loaded model can replace (see assets.json: tree, rock, weed, reed) */
@@ -456,10 +468,10 @@ export function flattenModel(root: THREE.Object3D): { geometry: THREE.BufferGeom
   return { geometry, material };
 }
 
-export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low", tod: TimeOfDay, rainy: boolean, tint: TintUniforms): WorldObjects {
+export function buildWorld(loc: LocationConfig, level: QualityLevel, tod: TimeOfDay, rainy: boolean, tint: TintUniforms): WorldObjects {
   const preset = TIMES_OF_DAY[tod];
   const dim = rainy ? 0.72 : 1;
-  const cnt = WORLD_COUNTS[level];
+  const lod = LOD[level];
   const rng = seededRng(4242);
   const group = new THREE.Group();
   group.name = "baliq-world";
@@ -493,7 +505,9 @@ export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low"
     depthWrite: false,
     fog: false,
   });
-  const sky = new THREE.Mesh(new THREE.SphereGeometry(1900, 32, 16), skyMat);
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 16), skyMat);
+  // scaled to the far plane (setLevel keeps it inside)
+  sky.scale.setScalar(lod.far * SKY_OF_FAR);
   sky.renderOrder = -10;
   sky.frustumCulled = false;
   group.add(sky);
@@ -501,9 +515,9 @@ export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low"
   // ---- clouds (instanced billboards, drift slowly)
   const cloudTex = makeCloudTexture();
   const cloudMat = new THREE.MeshBasicMaterial({ map: cloudTex, transparent: true, opacity: rainy ? 0.95 : 0.8, depthWrite: false, fog: false, color: rainy ? 0x9aa0a8 : tod === "sunset" ? 0xffd2b4 : 0xffffff });
-  const clouds = instanced(new THREE.PlaneGeometry(1, 0.5), cloudMat, cnt.clouds);
-  const cloudBase = new Float32Array(cnt.clouds * 5);
-  for (let i = 0; i < cnt.clouds; i++) {
+  const clouds = instanced(new THREE.PlaneGeometry(1, 0.5), cloudMat, lod.clouds);
+  const cloudBase = new Float32Array(lod.clouds * 5);
+  for (let i = 0; i < lod.clouds; i++) {
     cloudBase.set([(rng() - 0.5) * 1000, 70 + rng() * 90, -280 - rng() * 370, 140 + rng() * 120, 50 + rng() * 40], i * 5);
   }
   group.add(clouds);
@@ -511,20 +525,20 @@ export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low"
   // ---- mountains
   // aerial perspective: distant ranges fade into the sky colour, their peaks a little less than their feet
   const mtnHaze = { value: new THREE.Color(preset.fog) };
-  const mtnMat = mountainMaterial(level === "low" ? 2 : 8, mtnHaze, disposables);
-  const mtn = new THREE.Mesh(buildMountains(level), mtnMat);
+  const mtnMat = mountainMaterial(lod, mtnHaze, disposables, level);
+  const mtn = new THREE.Mesh(buildMountains(lod.mtn), mtnMat);
   mtn.frustumCulled = false;
   group.add(mtn);
 
   // ---- terrain
   const { bed, land } = buildTerrain(loc);
-  const groundTex = loadGroundTextures(level === "low" ? 2 : 8);
+  const groundTex = loadGroundTextures(lod, level);
   for (const k in groundTex) disposables.push(groundTex[k]);
-  const landMat = groundMaterial(groundTex);
+  const landMat = groundMaterial(groundTex, lod.lite);
   const landMesh = new THREE.Mesh(land, landMat);
   landMesh.name = "land";
   landMesh.layers.set(L_WORLD);
-  const bedMat = groundMaterial(groundTex);
+  const bedMat = groundMaterial(groundTex, lod.lite);
   applyUnderwaterTint(bedMat, tint);
   const bedMesh = new THREE.Mesh(bed, bedMat);
   bedMesh.name = "bed";
@@ -543,22 +557,22 @@ export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low"
     h.setAttribute("splat", new THREE.BufferAttribute(new Float32Array(n * 3).map((_, i) => (i % 3 === 0 ? 1 : 0)), 3));
     return h;
   });
-  const farMesh = new THREE.Mesh(mergeGeometries(farParts)!, groundMaterial(groundTex));
+  const farMesh = new THREE.Mesh(mergeGeometries(farParts)!, groundMaterial(groundTex, lod.lite));
   farMesh.frustumCulled = false;
   group.add(farMesh);
 
   // ---- trees (two instanced meshes)
   const trunkGeo = new THREE.CylinderGeometry(0.3, 0.45, 3.2, 6).translate(0, 1.6, 0);
   const crown = mergeGeometries([0, 1, 2].map((k) => colorVertices(new THREE.ConeGeometry(3 - k * 0.75, 4.2, 8).translate(0, 4 + k * 2, 0), [0x2f6b2a, 0x3d7d31, 0x275f26][k])))!;
-  const trunks = instanced(trunkGeo, new THREE.MeshLambertMaterial({ color: 0x5b3b22 }), cnt.trees);
-  const crowns = instanced(crown, new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }), cnt.trees);
+  const trunks = instanced(trunkGeo, new THREE.MeshLambertMaterial({ color: 0x5b3b22 }), lod.trees);
+  const crowns = instanced(crown, new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }), lod.trees);
   const treeSpots: Spot[] = [];
   let ti = 0;
   let guard = 0;
   // a dense belt on the far shore (z ~ -290 .. -370), forests on both side shores, and trees on the near land
-  const nFar = Math.round(cnt.trees * 0.55);
-  const nSide = Math.round(cnt.trees * 0.22);
-  while (ti < cnt.trees && guard++ < cnt.trees * 60) {
+  const nFar = Math.round(lod.trees * 0.55);
+  const nSide = Math.round(lod.trees * 0.22);
+  while (ti < lod.trees && guard++ < lod.trees * 60) {
     let x: number;
     let z: number;
     if (ti < nFar) {
@@ -586,7 +600,7 @@ export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low"
   }
   trunks.count = crowns.count = ti;
   // forest on the plain behind the far shore and up the lower slopes of the ranges (billboards only: all far away)
-  const nHill = Math.round(cnt.trees * 2.4);
+  const nHill = lod.hillTrees;
   guard = 0;
   let hill = 0;
   while (hill < nHill && guard++ < nHill * 30) {
@@ -597,18 +611,18 @@ export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low"
     if (z > -300 && Math.abs(x) < 95) continue;
     const h = Math.max(0.3, mountainHeight(x, z) - 9);
     if (h > 30 + rng() * 20) continue;
-    treeSpots.push({ x, y: h, z, s: 0.7 + Math.pow(rng(), 1.5) * 1.0, rot: 0, k: rng() });
+    treeSpots.push({ x, y: h, z, s: 0.7 + Math.pow(rng(), 1.5) * 1.0, rot: 0, k: rng(), hill: true });
     hill++;
   }
-  group.add(trunks, crowns);
+  trunks.visible = crowns.visible = false;
 
   // ---- shore rocks + bed rocks
   const rockGeo = new THREE.IcosahedronGeometry(1, 0);
   const rockMat = new THREE.MeshLambertMaterial({ color: 0x8b8b84, flatShading: true });
-  const shoreRocks = instanced(rockGeo, rockMat, cnt.rocks);
+  const shoreRocks = instanced(rockGeo, rockMat, lod.rocks);
   let ri = 0;
   guard = 0;
-  while (ri < cnt.rocks && guard++ < 4000) {
+  while (ri < lod.rocks && guard++ < 4000) {
     const x = -60 + rng() * 120;
     const z = -20 + rng() * 40;
     const d = shoreDistance(loc, x, z);
@@ -617,14 +631,16 @@ export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low"
     setInst(shoreRocks, ri++, x, terrainHeight(loc, x, z) + s * 0.1, z, s * 1.3, s * 0.8, s, rng() * 6);
   }
   shoreRocks.count = ri;
+  // not mirrored in the water: skipped by the reflection pass
+  shoreRocks.layers.set(L_NOREFL);
   group.add(shoreRocks);
   const bedRockMat = new THREE.MeshLambertMaterial({ color: 0x77766a, flatShading: true });
   applyUnderwaterTint(bedRockMat, tint);
-  const bedRocks = instanced(rockGeo, bedRockMat, cnt.rocks + 10);
+  const bedRocks = instanced(rockGeo, bedRockMat, lod.rocks + 10);
   bedRocks.layers.set(L_UNDER);
   let bi = 0;
   guard = 0;
-  while (bi < cnt.rocks + 10 && guard++ < 4000) {
+  while (bi < lod.rocks + 10 && guard++ < 4000) {
     const x = -40 + rng() * 80;
     const z = -50 + rng() * 58;
     const dep = bedDepth(loc, x, z);
@@ -659,11 +675,11 @@ export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low"
   const weedMat = new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide });
   sway(weedMat, 0.35);
   applyUnderwaterTint(weedMat, tint);
-  const weeds = instanced(weedGeo, weedMat, cnt.weeds);
+  const weeds = instanced(weedGeo, weedMat, lod.weeds);
   weeds.layers.set(L_UNDER);
   let wi = 0;
   guard = 0;
-  while (wi < cnt.weeds && guard++ < 6000) {
+  while (wi < lod.weeds && guard++ < 6000) {
     const x = -34 + rng() * 68;
     const z = -34 + rng() * 40;
     const dep = bedDepth(loc, x, z);
@@ -680,10 +696,10 @@ export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low"
   const reedMat = new THREE.MeshLambertMaterial({ color: 0x6b8f3a, side: THREE.DoubleSide });
   sway(reedMat, 0.04);
   const reedGeo = mergeGeometries([0, 1, 2].map((k) => blade(1.6 + k * 0.4, 0.07).rotateY(k * 1.0).translate(k * 0.04, 0, 0)).map((g) => g.toNonIndexed()))!;
-  const reeds = instanced(reedGeo, reedMat, cnt.reeds);
+  const reeds = instanced(reedGeo, reedMat, lod.reeds);
   let ei = 0;
   guard = 0;
-  while (ei < cnt.reeds && guard++ < 6000) {
+  while (ei < lod.reeds && guard++ < 6000) {
     const x = -66 + rng() * 132;
     const z = -30 + rng() * 45;
     const d = shoreDistance(loc, x, z);
@@ -698,7 +714,7 @@ export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low"
   // grass patches on the shore (the model comes from scenery.ts)
   const grassSpots: Spot[] = [];
   guard = 0;
-  while (grassSpots.length < cnt.grass && guard++ < cnt.grass * 60) {
+  while (grassSpots.length < lod.grass && guard++ < lod.grass * 60) {
     const x = -70 + rng() * 140;
     const z = -60 + rng() * 90;
     const d = shoreDistance(loc, x, z);
@@ -710,12 +726,12 @@ export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low"
 
   // ---- lily pads (+ a few flowers)
   const padGeo = new THREE.CircleGeometry(0.5, 14, 0.3, Math.PI * 2 - 0.5).rotateX(-Math.PI / 2);
-  const pads = instanced(padGeo, new THREE.MeshLambertMaterial({ color: 0x2c6427, side: THREE.DoubleSide }), cnt.pads);
-  const flowers = instanced(new THREE.ConeGeometry(0.12, 0.2, 7), new THREE.MeshLambertMaterial({ color: 0xff8fc4, emissive: 0x401020 }), Math.ceil(cnt.pads / 3));
+  const pads = instanced(padGeo, new THREE.MeshLambertMaterial({ color: 0x2c6427, side: THREE.DoubleSide }), lod.pads);
+  const flowers = instanced(new THREE.ConeGeometry(0.12, 0.2, 7), new THREE.MeshLambertMaterial({ color: 0xff8fc4, emissive: 0x401020 }), Math.ceil(lod.pads / 3));
   let pi = 0;
   let fi = 0;
   guard = 0;
-  while (pi < cnt.pads && guard++ < 4000) {
+  while (pi < lod.pads && guard++ < 4000) {
     const x = -40 + rng() * 80;
     const z = -26 + rng() * 32;
     const dep = bedDepth(loc, x, z);
@@ -765,9 +781,9 @@ export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low"
 
   let alive = true;
   disposables.push({ dispose: () => (alive = false) });
-  const loadSky = (gl: THREE.WebGLRenderer, scene: THREE.Scene, onFog: (c: THREE.Color) => void): void => {
-    const yaw = skyMat.uniforms.uRot.value as number;
-    new THREE.TextureLoader().load(`/textures/baliq-ovi/osmon_${preset.photo}.jpg`, (t) => {
+  const yaw = skyMat.uniforms.uRot.value as number;
+  const loadSky = (onFog: (c: THREE.Color) => void): void => {
+    new THREE.TextureLoader().load(texUrl(`/textures/baliq-ovi/osmon_${preset.photo}`, level), (t) => {
       if (!alive) return t.dispose();
       t.colorSpace = THREE.SRGBColorSpace;
       // no mipmaps: the atan() seam would pick the smallest level
@@ -806,22 +822,33 @@ export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low"
         /* keep the preset haze */
       }
     });
-    void import("three/examples/jsm/loaders/HDRLoader.js").then(async ({ HDRLoader }) => {
+  };
+
+  const loadEnv = async (gl: THREE.WebGLRenderer): Promise<THREE.Texture | null> => {
+    try {
+      const { HDRLoader } = await import("three/examples/jsm/loaders/HDRLoader.js");
       const tex = await new HDRLoader().loadAsync(`/textures/baliq-ovi/osmon_${preset.photo}.hdr`);
-      if (!alive) return tex.dispose();
+      if (!alive) {
+        tex.dispose();
+        return null;
+      }
       tex.mapping = THREE.EquirectangularReflectionMapping;
       const pm = new THREE.PMREMGenerator(gl);
       const env = pm.fromEquirectangular(tex).texture;
       pm.dispose();
       tex.dispose();
       disposables.push(env);
-      scene.environment = env;
-      scene.environmentIntensity = 0.55 * dim;
-      scene.environmentRotation.set(0, yaw, 0);
-      hemi.intensity *= 0.55;
-    }).catch(() => {
+      return env;
+    } catch {
       /* no image lighting: the sun and the hemisphere light still work */
-    });
+      return null;
+    }
+  };
+  const applyEnv = (scene: THREE.Scene, env: THREE.Texture): void => {
+    scene.environment = env;
+    scene.environmentIntensity = 0.55 * dim;
+    scene.environmentRotation.set(0, yaw, 0);
+    hemi.intensity *= 0.55;
   };
 
   const setBridgeModel = (o: THREE.Object3D): void => {
@@ -829,8 +856,27 @@ export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low"
     bridge.add(o);
   };
 
+  const showFallbackTrees = (): void => {
+    trunks.visible = crowns.visible = true;
+    group.add(trunks, crowns);
+  };
+
+  // live: a share of what was built stays visible when the level drops (and comes back when it rises)
+  const shares: [THREE.InstancedMesh, number, Parameters<typeof liveShare>[0]][] = [
+    [shoreRocks, shoreRocks.count, "rocks"], [bedRocks, bedRocks.count, "rocks"], [weeds, weeds.count, "weeds"], [reeds, reeds.count, "reeds"],
+    [pads, pads.count, "pads"], [flowers, flowers.count, "pads"], [clouds, clouds.count, "clouds"],
+  ];
+  const setLevel = (now: QualityLevel): void => {
+    for (const [m, n, key] of shares) {
+      m.count = Math.ceil(n * liveShare(key, level, now));
+      // hidden clouds (the photo sky is in) stay hidden
+      if (m !== clouds || skyMat.uniforms.uHas.value === 0) m.visible = m.count > 0;
+    }
+    sky.scale.setScalar(LOD[now].far * SKY_OF_FAR);
+  };
+
   return {
-    group, sky, skyMat, sun, hemi, fog, bridge, posts: postPos, clouds, cloudBase, swayTime, preset, dim, disposables, setBridgeModel, loadSky, treeSpots, grassSpots, sway,
+    group, sky, skyMat, sun, hemi, fog, bridge, posts: postPos, clouds, cloudBase, swayTime, preset, dim, disposables, setBridgeModel, loadSky, loadEnv, applyEnv, setLevel, showFallbackTrees, treeSpots, grassSpots, sway,
     parts: { trunks, crowns, shoreRocks, bedRocks, weeds, reeds },
   };
 }
@@ -839,6 +885,8 @@ export function buildWorld(loc: LocationConfig, level: "high" | "medium" | "low"
 export function updateWorld(w: WorldObjects, camera: THREE.Camera, t: number, dt: number, wind: number): void {
   w.sky.position.copy(camera.position);
   w.swayTime.value = t;
+  // the clouds hide when the photo sky comes in: no need to move them then
+  if (!w.clouds.visible) return;
   const n = w.clouds.count;
   for (let i = 0; i < n; i++) {
     const b = w.cloudBase;

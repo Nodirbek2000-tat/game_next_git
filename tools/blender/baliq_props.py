@@ -1,6 +1,6 @@
 """Harakat o'yinlari - Baliq ovi: the lake props, made in Blender from Poly Haven CC0 models (+ a modelled cattail).
 
-    blender -b --factory-startup --python tools/blender/baliq_props.py -- --src DIR --out public/models/baliq-ovi
+    blender -b --factory-startup --python tools/blender/baliq_props.py -- --src DIR --out assets-src/models/baliq-ovi
 
 DIR holds the Poly Haven 1k glTF downloads (modular_wooden_pier, rock_moss_set_01, grass_medium_01).
   bridge.glb : the pier, 2 x 3 sections of modular_wooden_pier scaled to the game's deck (4.2 x 8.6 m, deck at 0.55 m)
@@ -244,7 +244,7 @@ def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True)
-    ap.add_argument("--out", default="public/models/baliq-ovi")
+    ap.add_argument("--out", default="assets-src/models/baliq-ovi")
     ap.add_argument("--tex", default="tools/blender/out")
     ap.add_argument("--only", default="pier,rock,grass,reed")
     a = ap.parse_args(argv)

@@ -1,6 +1,6 @@
 """Harakat o'yinlari - game-ready versions of Poly Haven's CC0 trees (jacaranda_tree, tree_small_02), made in Blender.
 
-    blender -b --factory-startup --python tools/blender/cc0_trees.py -- --src DIR --out public/models/poyga/trees --tex public/textures/poyga/trees
+    blender -b --factory-startup --python tools/blender/cc0_trees.py -- --src DIR --out assets-src/models/poyga/trees --tex assets-src/textures/poyga/trees
 
 The originals have millions of leaf polygons. For the game:
   * trunk + branches are decimated (their own textures kept, downsized),
@@ -167,8 +167,8 @@ def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True)
-    ap.add_argument("--out", default="public/models/poyga/trees")
-    ap.add_argument("--tex", default="public/textures/poyga/trees")
+    ap.add_argument("--out", default="assets-src/models/poyga/trees")
+    ap.add_argument("--tex", default="assets-src/textures/poyga/trees")
     a = ap.parse_args(argv)
     out = os.path.abspath(a.out)
     tex = os.path.abspath(a.tex)

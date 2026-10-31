@@ -98,7 +98,7 @@ export class GeoBuilder {
   }
 
   /** Triangle (counter-clockwise seen from the normal side). */
-  tri(p: [number, number, number], q: [number, number, number], r: [number, number, number], color: Col): this {
+  tri(p: [number, number, number], q: [number, number, number], r: [number, number, number], color: Col, uv?: [number, number, number, number, number, number]): this {
     const e1 = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
     const e2 = [r[0] - p[0], r[1] - p[1], r[2] - p[2]];
     let nx = e1[1] * e2[2] - e1[2] * e2[1];
@@ -111,13 +111,14 @@ export class GeoBuilder {
     const [tnx, tnz] = this.tn(nx, nz);
     const c = col3(color);
     const base = this.vertexCount;
-    for (const v of [p, q, r]) {
+    [p, q, r].forEach((v, i) => {
       const [x, z] = this.tp(v[0], v[2]);
       this.pos.push(x, v[1], z);
       this.nor.push(tnx, ny, tnz);
       this.col.push(c[0], c[1], c[2]);
-      this.uv.push(0.03, 0.03);
-    }
+      if (uv) this.uv.push(uv[i * 2], uv[i * 2 + 1]);
+      else this.uv.push(0.03, 0.03);
+    });
     this.idx.push(base, base + 1, base + 2);
     return this;
   }
@@ -180,7 +181,7 @@ export class GeoBuilder {
     return this;
   }
 
-  /** Axis-aligned (in the local frame) box standing on y0. UVs on the walls tile one window bay per 3.2 m x 3.4 m. */
+  /** Axis-aligned (in the local frame) box standing on y0. With `windows` the wall UVs tile the facade picture: whole 3.2 m bays (no window cut at a corner) x 6.8 m (two floors). */
   box(cx: number, y0: number, cz: number, w: number, h: number, d: number, color: Col, opts: { top?: Col; windows?: boolean; noTop?: boolean } = {}): this {
     const x0 = cx - w / 2;
     const x1 = cx + w / 2;
@@ -188,9 +189,9 @@ export class GeoBuilder {
     const z1 = cz + d / 2;
     const y1 = y0 + h;
     const win = opts.windows;
-    const uw = win ? w / 3.2 : 0;
-    const ud = win ? d / 3.2 : 0;
-    const vh = win ? h / 3.4 : 0;
+    const uw = win ? Math.max(1, Math.round(w / 3.2)) : 0;
+    const ud = win ? Math.max(1, Math.round(d / 3.2)) : 0;
+    const vh = win ? h / 6.8 : 0;
     const wall = (a: [number, number, number], b: [number, number, number], c: [number, number, number], e: [number, number, number], u: number): void => {
       this.quad(a, b, c, e, color, win ? [0, 0, u, 0, u, vh, 0, vh] : undefined);
     };

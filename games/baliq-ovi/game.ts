@@ -4,10 +4,11 @@
 
 import * as THREE from "three";
 import { disposeTree, type EngineApi, type PlayerFrame } from "@/engine";
+import type { QualityLevel } from "@/engine/types";
 import { AssetLib } from "./assets";
 import { Angler, type Host } from "./angler";
 import { collectionSize, loadCollection, recordCatch, saveCollection, type Collection } from "./collection";
-import { Ripples, Splashes, makeRain } from "./effects";
+import { Ripples, Splashes, makeRain, setRainCount } from "./effects";
 import { AState, FishSim, type Agent, type Bait } from "./fishai";
 import { FishViews } from "./fishViews";
 import type { AnglerInput } from "./gestures";
@@ -15,6 +16,7 @@ import { bedDepth, LAKE, LOCATIONS, rollWeather, TIMES_OF_DAY, waveHeight, type 
 import {
   addCatch, clamp, coopDone, duelWinner, netHelpApplies, TUNING, type GameMode, type Tuning, lineInDanger,
 } from "./rules";
+import { effectiveLevel, LOD } from "./lod";
 import { GameSfx } from "./sfx";
 import { SPECIES, pickSpecies, rollWeight, type SpeciesDef } from "./species";
 import { makeDepthTexture, makeWaterNormal } from "./textures";
@@ -26,6 +28,7 @@ import { drawOverlay } from "./overlay";
 import { EYE, FOV, headTurn, lookPitch, ViewController, emptyHead } from "./view";
 import { VoiceControl, type VoiceCtx, type VoiceEventKind } from "./voice";
 import { loadVoicePref, saveVoicePref, VoiceInput } from "./voiceInput";
+import { VOICE_PLAY_AVAILABLE } from "./playMode";
 
 export type Phase = "options" | "lobby" | "play" | "collection" | "done";
 
@@ -83,7 +86,6 @@ export class BaliqRig implements Host {
   readonly rain: THREE.LineSegments | null;
   readonly waveAmp: number;
   readonly ui: UiState = { px: 0, py: 0, pointer: false, hover: -1, prog: 0, sel: 0, btnProg: 0, w: 1280, h: 720 };
-  readonly particleScale: number;
   readonly force: string | null;
   readonly waitScale: number;
   readonly maxCast: number;
@@ -97,7 +99,7 @@ export class BaliqRig implements Host {
   voiceIn: VoiceInput | null = null;
   /** the player wants the voice (pre-start option) */
   voiceWanted = false;
-  /** the voice option is offered (one player only: one microphone cannot tell two players apart) */
+  /** the voice option is offered (only while VOICE_PLAY_AVAILABLE, and for one player: one microphone cannot tell two players apart) */
   readonly voiceOffered: boolean;
   private head = emptyHead();
   private optLatch = false;
@@ -125,6 +127,10 @@ export class BaliqRig implements Host {
   private cam: THREE.PerspectiveCamera;
   private saved: { fov: number; near: number; far: number; pos: THREE.Vector3; exposure: number; layers: number };
   private scenery: Scenery | null = null;
+  /** the level the scene was built for (lod.ts); a live level above it cannot show more than was built */
+  private readonly built: QualityLevel;
+  /** rendered frames; the heavy parts of the scene stream in at fixed frames (see `stage`) */
+  private frame = 0;
   private savedEnv!: { env: THREE.Texture | null; intensity: number; rot: THREE.Euler };
   private hudAt = 0;
   private birdAt = 0;
@@ -142,6 +148,8 @@ export class BaliqRig implements Host {
   warnCount = 0;
   private keyHeld = new Set<string>();
   private netHeld = [false, false];
+  /** real seconds of the last frame (the game clock is capped at 50 ms, hand speeds need the real one) */
+  private realDt = 0.016;
   private disposedFlag = false;
 
   constructor(
@@ -152,13 +160,14 @@ export class BaliqRig implements Host {
     const q = engine.query;
     this.loc = LOCATIONS[q.get("loc") ?? ""] ?? LAKE;
     const level = engine.quality.level;
+    this.built = level;
+    const lod = LOD[level];
     this.tuning = { kids: engine.kids, sensitivity: engine.sensitivity };
     this.weather = rollWeather(this.loc, Math.random, { tod: q.get("tod"), rain: q.get("rain"), wind: q.get("wind") });
     this.preset = TIMES_OF_DAY[this.weather.tod];
     this.waveAmp = 0.7 + this.weather.wind * 0.9;
     this.force = q.get("fish");
     this.waitScale = clamp(Number(q.get("wait") ?? 1) || 1, 0.05, 5);
-    this.particleScale = engine.quality.particles;
     this.maxCast = Number(q.get("maxcast")) > 5 ? Number(q.get("maxcast")) : this.loc.maxCast;
     this.collection = loadCollection();
 
@@ -167,7 +176,7 @@ export class BaliqRig implements Host {
     const qm = q.get("mode");
     this.mode = n === 1 ? "yolgiz" : qm === "musobaqa" ? "musobaqa" : "birgalikda";
     this.phase = n === 2 && qm !== "musobaqa" && qm !== "birgalikda" ? "lobby" : n === 1 && q.get("opts") !== "0" ? "options" : "play";
-    this.voiceOffered = n === 1;
+    this.voiceOffered = VOICE_PLAY_AVAILABLE && n === 1;
     this.voiceWanted = this.voiceOffered && (q.get("voice") === "1" ? true : q.get("voice") === "0" || this.phase !== "options" ? false : loadVoicePref(engine.kids));
     this.voice.lenient = engine.kids;
     this.acceptInput = this.phase === "play";
@@ -181,8 +190,8 @@ export class BaliqRig implements Host {
     this.cam.fov = FOV;
     this.cam.rotation.order = "YXZ";
     this.cam.near = 0.1;
-    // the ranges stand 0.4 - 1.6 km away (they are one mesh: cheap at any distance)
-    this.cam.far = 2200;
+    // the ranges stand 0.4 - 1.6 km away (one mesh); the far plane, the ranges' extent and the sky dome follow the level
+    this.cam.far = lod.far;
     this.cam.layers.enable(L_NOREFL);
     this.cam.updateProjectionMatrix();
     three.gl.toneMappingExposure = this.preset.exposure;
@@ -195,7 +204,7 @@ export class BaliqRig implements Host {
     three.scene.fog = this.world.fog;
 
     // ---- water
-    this.normalTex = makeWaterNormal(level === "low" ? 128 : 256);
+    this.normalTex = makeWaterNormal(lod.normalSize, 7, Math.min(4, Math.max(2, lod.aniso)));
     this.depthTex = makeDepthTexture(this.loc, 128);
     this.disposables.push(this.normalTex, this.depthTex);
     const sunDir = new THREE.Vector3(...this.preset.sun).normalize();
@@ -214,14 +223,14 @@ export class BaliqRig implements Host {
     this.waterMat.uniforms.uSkyHor.value.copy(this.world.skyMat.uniforms.uHor.value);
     this.waterMat.uniforms.uFog.value.copy(this.world.fog.color);
     this.savedEnv = { env: three.scene.environment, intensity: three.scene.environmentIntensity, rot: three.scene.environmentRotation.clone() };
-    this.world.loadSky(three.gl, three.scene, (c) => {
+    this.world.loadSky((c) => {
       this.waterMat.uniforms.uFog.value.copy(c);
       this.waterMat.uniforms.uSkyHor.value.copy(c);
     });
     const posts = this.world.posts.slice(0, 8);
     posts.forEach((p, i) => (this.waterMat.uniforms.uPosts.value[i] as THREE.Vector2).set(p[0], p[1]));
     this.waterMat.uniforms.uPostCount.value = posts.length;
-    this.waterMesh = new THREE.Mesh(buildWaterGeometry(level === "high" ? 120 : level === "medium" ? 90 : 60), this.waterMat);
+    this.waterMesh = new THREE.Mesh(buildWaterGeometry(lod.waterGrid), this.waterMat);
     this.waterMesh.frustumCulled = false;
     this.waterMesh.renderOrder = 1;
     this.waterMesh.layers.set(0);
@@ -236,8 +245,7 @@ export class BaliqRig implements Host {
     // ---- fish
     const ambient = level === "high" ? 12 : level === "medium" ? 9 : 6;
     const cap = ambient + 2;
-    this.views = new FishViews(cap, 2, group, tint);
-    this.views.prepareAll(SPECIES);
+    this.views = new FishViews(cap, 2, group, tint, (o) => this.warm(o));
     this.sim = new FishSim(
       {
         depth: (x, z) => bedDepth(this.loc, x, z),
@@ -269,7 +277,7 @@ export class BaliqRig implements Host {
     this.ripples = new Ripples((x, z) => this.water(x, z));
     this.splashes = new Splashes();
     group.add(this.ripples.mesh, this.splashes.points);
-    this.rain = this.weather.rain ? makeRain(level === "low" ? 250 : 520) : null;
+    this.rain = this.weather.rain ? makeRain(lod.rain) : null;
     if (this.rain) group.add(this.rain);
     this.disposables.push(this.splashes);
     this.sfx = new GameSfx(engine, this.assets);
@@ -283,7 +291,6 @@ export class BaliqRig implements Host {
       this.anglers.push(a);
       this.baits.push(a.bait);
     }
-    this.loadModels();
 
     engine.hud.show(true);
     this.updateHud(true);
@@ -295,18 +302,54 @@ export class BaliqRig implements Host {
   }
 
   /**
+   * The heavy parts of the scene stream in after the first frames, one step every few frames, so that the game opens
+   * first and nothing lands in a single frame: props and bridge (models), the firs and grass, the fish models, the
+   * image light. Each step compiles its shaders in the background (`warm`) before it is shown.
+   */
+  private stage(): void {
+    switch (++this.frame) {
+      case 6:
+        this.loadProps();
+        break;
+      case 14:
+        this.loadScenery();
+        break;
+      case 26:
+        this.views.start();
+        break;
+      case 40:
+        void this.loadEnv();
+        break;
+    }
+  }
+
+  /**
+   * Compile the shaders of an object that is not in the scene yet (or is hidden) in the background, so that showing it does
+   * not stall a frame. Never rejects; gives up after 3 s (a driver without parallel compile finishes inside the call).
+   */
+  warm(o: THREE.Object3D): Promise<void> {
+    if (this.disposedFlag) return Promise.resolve();
+    const { gl, scene } = this.three;
+    const compiled = gl.compileAsync(o, this.cam, scene).then(() => undefined);
+    return Promise.race([compiled, new Promise<void>((r) => setTimeout(r, 3000))]).catch(() => undefined);
+  }
+
+  /**
    * Real models from assets.json replace the procedural geometry as soon as they are delivered (present: true). Every
    * entry is optional; a missing or broken file leaves the procedural version in place. Single-material models only.
    */
-  private loadModels(): void {
+  private loadProps(): void {
     const lib = this.assets;
     const w = this.world;
     /** keep: the procedural material stays (its sway / underwater tint), it only takes the model's textures */
     const swap = (key: string, targets: THREE.Mesh[], keep = false): void => {
-      void lib.model(key).then((o) => {
+      void lib.model(key).then(async (o) => {
         if (!o || this.disposedFlag) return;
         const f = flattenModel(o);
         if (!f) return;
+        // hidden while the new material compiles in the background
+        const was = targets.map((t) => t.visible);
+        for (const t of targets) t.visible = false;
         for (const t of targets) {
           t.geometry.dispose();
           t.geometry = f.geometry;
@@ -320,25 +363,65 @@ export class BaliqRig implements Host {
             m.needsUpdate = true;
           } else if (src) t.material = src;
         }
+        await Promise.all(targets.map((t) => this.warm(t)));
+        if (this.disposedFlag) return;
+        targets.forEach((t, i) => {
+          if (was[i]) t.visible = true;
+        });
       });
     };
-    // firs + grass (CC0, processed in Blender): real models near the camera, impostors on the far shores
-    this.scenery = new Scenery(w.treeSpots, w.grassSpots, new THREE.Vector3(EYE.x, EYE.y, EYE.z), 34, w.sway);
-    this.scenery.onTrees = () => {
-      w.parts.trunks.visible = false;
-      w.parts.crowns.visible = false;
-    };
-    this.group.add(this.scenery.group);
-    void lib.model("bridge").then((o) => o && !this.disposedFlag && w.setBridgeModel(o));
+    void lib.model("bridge").then(async (o) => {
+      if (!o || this.disposedFlag) return;
+      await this.warm(o);
+      if (!this.disposedFlag) w.setBridgeModel(o);
+    });
     swap("tree", [w.parts.crowns]);
     void lib.model("tree").then((o) => o && (w.parts.trunks.visible = false));
-    swap("rock", [w.parts.shoreRocks, w.parts.bedRocks], true);
+    // the 900-triangle rock only where the level can afford ~100 of them
+    if (LOD[this.built].rockModel) swap("rock", [w.parts.shoreRocks, w.parts.bedRocks], true);
     swap("weed", [w.parts.weeds], true);
     swap("reed", [w.parts.reeds], true);
     swap("boot", this.views.boots);
     swap("bottle", this.views.bottles);
     swap("float", this.anglers.map((a) => a.floatMesh));
     swap("angler", this.anglers.map((a) => a.body));
+  }
+
+  /** Firs + grass (CC0, processed in Blender): real models near the camera, impostors on the far shores. */
+  private loadScenery(): void {
+    const w = this.world;
+    const s = new Scenery(w.treeSpots, w.grassSpots, new THREE.Vector3(EYE.x, EYE.y, EYE.z), w.sway, this.built);
+    this.scenery = s;
+    s.setLevel(this.engine.quality.level);
+    s.onFail = () => w.showFallbackTrees();
+    s.onReady = () => {
+      void this.warm(s.group).then(() => {
+        if (!this.disposedFlag) this.group.add(s.group);
+      });
+    };
+    s.start();
+  }
+
+  /**
+   * The photo as image light. The shaders that use it compile in the background against a probe scene that carries the
+   * environment; only then does the real scene take it (otherwise every lit material would recompile in one frame).
+   */
+  private async loadEnv(): Promise<void> {
+    if (!LOD[this.built].env || this.disposedFlag) return;
+    const { gl, scene } = this.three;
+    const env = await this.world.loadEnv(gl);
+    if (!env || this.disposedFlag) return;
+    const probe = new THREE.Scene();
+    probe.fog = scene.fog;
+    probe.environment = env;
+    try {
+      await Promise.race([gl.compileAsync(this.group, this.cam, probe), new Promise((r) => setTimeout(r, 4000))]);
+    } catch {
+      /* the switch below compiles in the frame instead */
+    }
+    // the level may have dropped to low while this loaded: no image light then
+    if (this.disposedFlag || this.engine.quality.level === "low") return;
+    this.world.applyEnv(scene, env);
   }
 
   private durationFor(mode: GameMode): number {
@@ -366,6 +449,10 @@ export class BaliqRig implements Host {
   // ------------------------------------------------------------------ Host
   get camera(): THREE.Camera {
     return this.cam;
+  }
+  /** live: the particle share follows the quality controller */
+  get particleScale(): number {
+    return this.engine.quality.particles;
   }
   water(x: number, z: number): number {
     return waveHeight(x, z, this.t, this.waveAmp, bedDepth(this.loc, x, z));
@@ -458,8 +545,11 @@ export class BaliqRig implements Host {
     i.shoulderY = (lm[11].y + lm[12].y) / 2;
     i.handUp = pf.gestures.handUp[dom];
     i.vy = pf.gestures.wristVel[dom].y;
-    i.crank = pf.gestures.crank[other];
+    // the reel hand draws the circles: its wrist position is tracked here (speed and direction), not by the engine
     i.reelVisible = lm[ri].v > 0.35;
+    i.reelX = lm[ri].x;
+    i.reelY = lm[ri].y;
+    i.realDt = this.realDt;
     i.leftY = lm[15].y;
     i.rightY = lm[16].y;
     i.leftVisible = lm[15].v > 0.35;
@@ -523,6 +613,7 @@ export class BaliqRig implements Host {
   /** Called every rendered frame (also during the countdown / pause). */
   tick(delta: number): void {
     const dt = Math.min(0.05, Math.max(0.0005, delta));
+    this.realDt = Math.min(0.3, Math.max(0.0005, delta));
     this.t += dt;
     const e = this.engine;
     const playing = e.state === "play";
@@ -649,7 +740,8 @@ export class BaliqRig implements Host {
 
   // ------------------------------------------------------------------ voice
   private startVoice(): void {
-    if (!this.voiceWanted || !this.voiceOffered || this.voiceIn) return;
+    // the microphone is only ever created here, and only when the voice mode is switched on
+    if (!VOICE_PLAY_AVAILABLE || !this.voiceWanted || !this.voiceOffered || this.voiceIn) return;
     const v = new VoiceInput((kind, level) => this.onVoice(kind, level));
     this.voiceIn = v;
     void v.start();
@@ -863,13 +955,11 @@ export class BaliqRig implements Host {
     this.applyCamera(dt);
     const u = this.waterMat.uniforms;
     u.uTime.value = t;
-    // quality can drop while playing: switch the expensive water passes off
+    this.stage();
+    // the quality controller can change the level at any time: cut or restore what is cheap to cut
     if (e.quality.level !== this.lastQuality) {
       this.lastQuality = e.quality.level;
-      const on = e.quality.level !== "low" && !!this.passes.refl;
-      this.passes.setEnabled(on);
-      if (on) this.cam.layers.disable(L_UNDER);
-      else this.cam.layers.enable(L_UNDER);
+      this.applyLevel();
     } else if (this.passes.enabled && u.uUseRefl.value === 0) {
       this.passes.setEnabled(true);
       this.cam.layers.disable(L_UNDER);
@@ -889,7 +979,27 @@ export class BaliqRig implements Host {
       this.sfx.update(t, this.weather.wind);
     }
     // refraction + reflection passes (before the engine renders the main view)
-    this.passes.render(this.three.gl, this.three.scene, this.cam, true);
+    this.passes.render(this.three.gl, this.three.scene, this.cam);
+  }
+
+  /**
+   * Live level change: far plane + sky dome, instance counts (rocks, weeds, reeds, pads, trees, grass, rain), the real fir
+   * models, the water passes. Nothing is rebuilt and no texture is requested again; what was built stays the ceiling.
+   */
+  private applyLevel(): void {
+    const cur = this.engine.quality.level;
+    const eff = effectiveLevel(this.built, cur);
+    const lod = LOD[eff];
+    this.cam.far = lod.far;
+    this.cam.updateProjectionMatrix();
+    this.world.setLevel(eff);
+    this.scenery?.setLevel(cur);
+    if (this.rain) setRainCount(this.rain, lod.rain);
+    const on = !!lod.passes && !!this.passes.refl;
+    this.passes.setEnabled(on);
+    if (lod.passes) this.passes.period = lod.passes.every;
+    if (on) this.cam.layers.disable(L_UNDER);
+    else this.cam.layers.enable(L_UNDER);
   }
 
   /** First person: the camera is the player's eye; it turns with the view yaw and eases its pitch towards the float / fish. */
@@ -983,11 +1093,12 @@ export class BaliqRig implements Host {
         lost: a.tally.lost,
         netOffer: a.netOffer,
         float: { x: a.fx, y: a.fy, z: a.fz },
-        sig: { crank: a.sig.crank, armed: a.sig.armed, pitch: a.sig.pitch, yaw: a.sig.yawDeg },
+        sig: { crank: a.sig.crank, spin: a.sig.spin, armed: a.sig.armed, stroking: a.sig.stroking, pitch: a.sig.pitch, yaw: a.sig.yawDeg, steer: a.sig.steer },
         castDir: a.castDir,
         autoStruck: a.autoStruck,
         fightAng: a.fight?.ang ?? 0,
         fightRun: a.fight?.run ?? false,
+        fightSurge: a.fight?.surge ?? 0,
       })),
       fish: this.sim.agents.filter((a) => a.active).length,
       collection: collectionSize(this.collection),

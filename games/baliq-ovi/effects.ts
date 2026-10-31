@@ -88,6 +88,8 @@ export class Splashes {
   private next = 0;
   private attr: THREE.BufferAttribute;
   private tex = makeDotTexture();
+  /** a burst was added since the last update */
+  private dirty = false;
 
   constructor() {
     const g = new THREE.BufferGeometry();
@@ -114,11 +116,15 @@ export class Splashes {
       this.vel[i * 3 + 2] = Math.sin(a) * s * 0.7;
       this.life[i] = 0.5 + Math.random() * 0.5;
     }
+    if (count > 0) this.dirty = true;
   }
 
   update(dt: number): void {
+    // nothing flying and nothing that just landed: no loop, no buffer upload
+    let any = this.dirty;
     for (let i = 0; i < DROPS; i++) {
       if (this.life[i] <= 0) continue;
+      any = true;
       this.life[i] -= dt;
       if (this.life[i] <= 0) {
         this.pos[i * 3 + 1] = -100;
@@ -129,7 +135,8 @@ export class Splashes {
       this.pos[i * 3 + 1] += this.vel[i * 3 + 1] * dt;
       this.pos[i * 3 + 2] += this.vel[i * 3 + 2] * dt;
     }
-    this.attr.needsUpdate = true;
+    this.dirty = false;
+    if (any) this.attr.needsUpdate = true;
   }
 
   dispose(): void {
@@ -170,4 +177,12 @@ export function makeRain(count: number): THREE.LineSegments {
   l.frustumCulled = false;
   l.layers.set(L_NOREFL);
   return l;
+}
+
+/** Draw only the first `n` streaks of a rain made with makeRain (live level change). */
+export function setRainCount(rain: THREE.LineSegments, n: number): void {
+  const total = rain.geometry.getAttribute("aEnd").count / 2;
+  const k = Math.max(0, Math.min(total, Math.round(n)));
+  rain.geometry.setDrawRange(0, k * 2);
+  rain.visible = k > 0;
 }

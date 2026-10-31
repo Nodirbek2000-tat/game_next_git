@@ -1,4 +1,4 @@
-import { clamp } from "@/engine/math";
+import { loadMetres } from "../render/lod";
 import { TILE, type Layout, type TileSpec } from "./layout";
 
 export type Lod = 0 | 1;
@@ -12,11 +12,10 @@ export interface TileRadii {
   far: number;
 }
 
-/** View distance from engine.quality.viewDistance (0..1): high ~ 310 m, medium ~ 265 m, low ~ 220 m of streamed world. */
+/** View distance from engine.quality.viewDistance (0..1): high 300 m, medium 237 m, low 175 m of streamed world (render/lod.ts). */
 export function radiiFor(viewDistance: number): TileRadii {
-  const vd = clamp(viewDistance, 0.2, 1);
-  const load = TILE * (1.1 + 1.5 * vd);
-  return { load, unload: load + TILE * 0.6, far: load * 1.05 };
+  const load = loadMetres(viewDistance);
+  return { load, unload: load + TILE * 0.5, far: load * 1.05 };
 }
 
 export interface PlanItem {

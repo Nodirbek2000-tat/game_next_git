@@ -60,6 +60,8 @@ export interface Host {
   pickFor(depth: number): SpeciesDef;
   rollW(sp: SpeciesDef): number;
   recycle(agentIdx: number): void;
+  /** compile the shaders of an object that is not in the scene yet, in the background (resolves when it can be shown without a stall) */
+  warm?(o: THREE.Object3D): Promise<void>;
 }
 
 /** the cast swing (s, rad): back-load until t1, forward snap until t2, settle until T */
@@ -158,6 +160,11 @@ export class Angler {
   /** in "ready": the float hangs under the tip (after the first cast) */
   private floatShown = false;
   private castFrom = 0.5;
+  /** the rod pitch the forward snap of the cast animation starts from, and how much of the hand load-up it shows (a real stroke already did it) */
+  private castBack = CAST_ANIM.back;
+  private castLoad = 1;
+  /** where the rod hand is against its neutral, -1 .. 1 (steers the fish) */
+  steer = 0;
   private strikeT = 99;
   private lefty: boolean;
   private disposed = false;
@@ -199,9 +206,10 @@ export class Angler {
     this.resetRoundVisuals();
     // the Blender rod set with the player's hands and sleeves replaces the procedural reel / arms
     this.rod.mirror = lefty;
-    void RodModel.load(color).then((m) => {
+    void RodModel.load(color).then(async (m) => {
       if (!m || this.disposed) return;
-      this.rod.useModel(m);
+      await host.warm?.(m.group);
+      if (!this.disposed) this.rod.useModel(m);
     });
   }
 
@@ -273,8 +281,8 @@ export class Angler {
     this.stT += dt;
     this.msgT -= dt;
     this.bait.disturb = Math.max(this.bait.disturb, 0);
-    // reeling noise
-    this.reelAngle += this.sig.crank * Math.PI * 2 * dt;
+    // reeling noise; the drawn handle turns with the real speed and direction of the hand
+    this.reelAngle += this.sig.spin * TUNING.reel.visualSign * Math.PI * 2 * dt;
     this.clickAcc += this.sig.crank * dt * 3;
     if (this.clickAcc >= 1) {
       this.clickAcc = 0;
@@ -284,7 +292,7 @@ export class Angler {
 
     switch (this.state) {
       case "ready":
-        if (this.sig.cast) this.cast(this.sig.castPower);
+        if (this.sig.cast) this.cast(this.sig.castPower, this.sig.castAim, this.sig.castHand);
         break;
       case "fly": {
         castPos(this.plan, this.stT, this.flyPos);
@@ -314,11 +322,11 @@ export class Angler {
     this.D = Math.hypot(this.fx - this.gx, this.fz - this.gz);
   }
 
-  private cast(power: number): void {
+  /** `power` 0..1 (arm speed), `aim`: hand offset during the stroke, `viaHand`: a real arm stroke (the hand already loaded the rod) */
+  private cast(power: number, aim: number, viaHand: boolean): void {
     const h = this.host;
-    // the hand decides the side relative to where the player looks
-    const yaw = clamp(this.sig.yawDeg, -TUNING.cast.maxYawDeg, TUNING.cast.maxYawDeg) * (Math.PI / 180);
-    this.castDir = h.viewYaw + (Number.isFinite(yaw) ? yaw : castYaw(this.sig.yawNorm));
+    // the arm decides the side relative to where the player looks
+    this.castDir = h.viewYaw + castYaw(Number.isFinite(aim) ? aim : 0);
     let D = castDistance(power, h.tuning.kids, h.maxCast);
     // never land on the shore: shorten until there is enough water
     for (let k = 0; k < 8; k++) {
@@ -339,8 +347,11 @@ export class Angler {
     this.floatMesh.visible = true;
     this.setState("fly");
     this.whip.trigger(power);
-    this.castAnimT = 0;
+    // a real stroke already loaded the rod and moved the hands: the animation starts at the forward snap from the live pose
+    this.castAnimT = viaHand ? CAST_ANIM.t1 : 0;
     this.castFrom = this.rodPitch;
+    this.castBack = viaHand ? this.rodPitch : Math.max(this.rodPitch, CAST_ANIM.back);
+    this.castLoad = viaHand ? 0.25 : 1;
     this.trailLen = 0;
     h.engine.audio.whoosh(0.25 + power * 0.5);
     h.say(this, `Tashlandi! ${Math.round(D)} m`, 1200);
@@ -522,6 +533,7 @@ export class Angler {
     this.fight = new FightModel({ species: sp, weight: this.weight, startD: Math.max(this.D, 7), kids: h.tuning.kids, rng: h.rng });
     this.castDir = Math.atan2(this.fx - this.gx, -(this.fz - this.gz));
     h.sim.hook(a);
+    this.whip.jerk(TUNING.strike.jerk);
     this.dip = 0;
     this.strain = 0.3;
     this.setState("fight");
@@ -545,11 +557,18 @@ export class Angler {
     if (!f || !sp) return;
     const s = this.sig;
     const assist = h.tuning.kids && this.strain < 0.75 ? KIDS_ASSIST_CRANK : 0;
-    const ev: FightEvent = f.step(dt, { crank: Math.max(s.crank, assist), pump: s.pumpLift, reelMul: s.pumpLower, side: clamp(s.yawNorm, -1, 1) });
+    this.steer = s.steer;
+    const ev: FightEvent = f.step(dt, { crank: Math.max(s.crank, assist), pump: s.pumpLift, reelMul: s.pumpLower, side: s.steer });
     this.strain = lerp(this.strain, f.strain, 1 - Math.exp(-dt * 10));
     if (f.ranNow) {
       h.sfx.splash(false);
       h.ripples.addAt(this.fx, this.fz, 0.8, 0.9);
+    }
+    if (f.surged) {
+      // the fish surges to its side: a splash where the line cuts the water
+      h.sfx.splash(false);
+      h.splashes.burst(this.fx, this.fy, this.fz, Math.round(8 + 10 * f.big), 0.7 + 0.5 * f.big, h.particleScale);
+      h.ripples.addAt(this.fx, this.fz, 0.9, 1);
     }
     if (f.jumped) {
       h.sfx.splash(true);
@@ -661,7 +680,8 @@ export class Angler {
     const ct = this.castAnimT;
     if (ct < CAST_ANIM.T) {
       // load the rod back over the shoulder, snap it forward (the line goes), follow through and settle
-      const back = Math.max(this.castFrom, CAST_ANIM.back);
+      const back = this.castBack;
+      const L = this.castLoad;
       if (ct < CAST_ANIM.t1) {
         const u = easeOut(ct / CAST_ANIM.t1);
         castPitch = lerp(this.castFrom, back, u);
@@ -670,8 +690,8 @@ export class Angler {
       } else if (ct < CAST_ANIM.t2) {
         const u = easeIn((ct - CAST_ANIM.t1) / (CAST_ANIM.t2 - CAST_ANIM.t1));
         castPitch = lerp(back, CAST_ANIM.low, u);
-        offY += lerp(0.07, -0.06, u);
-        offZ += lerp(0.06, -0.17, u);
+        offY += lerp(0.07 * L, -0.06, u);
+        offZ += lerp(0.06 * L, -0.17, u);
       } else {
         const u = smoothstep((ct - CAST_ANIM.t2) / (CAST_ANIM.T - CAST_ANIM.t2));
         castPitch = lerp(CAST_ANIM.low, (20 * Math.PI) / 180, u);
@@ -712,11 +732,13 @@ export class Angler {
     const f = this.fight;
     const T = clamp(f?.T ?? 0, 0, 1.3);
     // the bend settles where the load wants it; the cast whip rings on top of it
-    const bendT = fighting ? 0.25 + T * 0.9 : toFloat && this.state !== "fly" ? 0.12 : 0.03;
+    // ready: the rod lags behind the arm, so it bends back while the hand swings down and springs forward when the hand stops
+    const armBend = this.state === "ready" ? clamp(-this.sig.armV * TUNING.cast.bendGain, -0.8, 0.25) : 0;
+    const bendT = fighting ? 0.25 + T * 0.9 : toFloat && this.state !== "fly" ? 0.12 : 0.03 + armBend;
     this.whip.step(dt, bendT, this.whip.age < 1.4 ? 0.14 : 0.45);
     this.bend = this.whip.bend;
     // towards where the fish pulls: the tip is dragged sideways
-    this.bendYaw = lerp(this.bendYaw, fighting && f ? clamp(f.ang * 0.9, -0.45, 0.45) * clamp(T, 0.25, 1) : 0, 1 - Math.exp(-dt * 6));
+    this.bendYaw = lerp(this.bendYaw, fighting && f ? clamp(f.ang * 1.3, -0.55, 0.55) * clamp(T, 0.35, 1) : 0, 1 - Math.exp(-dt * 6));
     this.rod.update(gx, gy, gz, this.rodYaw, this.rodPitch + dPitch + this.whip.kick * (castPitch === null ? 1 : 0.3), this.bend, this.bendYaw, this.reelAngle);
     this.rod.fixNormals();
 

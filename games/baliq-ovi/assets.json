@@ -27,9 +27,9 @@
     "fish.oltin": { "path": "fish/oltin.glb", "present": false }
   },
   "textures": {
-    "waterNormal": { "path": "textures/water-normal.jpg", "present": false },
-    "wood": { "path": "textures/wood.jpg", "present": false },
-    "clouds": { "path": "textures/clouds.png", "present": false }
+    "waterNormal": { "path": "textures/water-normal.webp", "present": false },
+    "wood": { "path": "textures/wood.webp", "present": false },
+    "clouds": { "path": "textures/clouds.webp", "present": false }
   },
   "sounds": {
     "birds": { "path": "/audio/baliq-ovi/birds.ogg", "present": false },

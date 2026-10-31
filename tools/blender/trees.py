@@ -1,6 +1,6 @@
 """Harakat o'yinlari - realistic trees for the city (Lombardy poplar "terak", plane tree "chinor"), built in Blender.
 
-    blender -b --factory-startup --python tools/blender/trees.py -- [--out public/models/poyga/trees] [--tex public/textures/poyga/trees] [--preview DIR]
+    blender -b --factory-startup --python tools/blender/trees.py -- [--out assets-src/models/poyga/trees] [--tex assets-src/textures/poyga/trees] [--preview DIR]
 
 1. Leaf-cluster textures are RENDERED from real little twigs with modelled leaves (orthographic, transparent background),
    bark textures from a procedural bark material: so the game's leaf cards show real leaf shapes, light and colour.
@@ -559,8 +559,8 @@ def preview(texdir, d):
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="public/models/poyga/trees")
-    ap.add_argument("--tex", default="public/textures/poyga/trees")
+    ap.add_argument("--out", default="assets-src/models/poyga/trees")
+    ap.add_argument("--tex", default="assets-src/textures/poyga/trees")
     ap.add_argument("--preview", default="")
     ap.add_argument("--variants", type=int, default=3)
     a = ap.parse_args(argv)

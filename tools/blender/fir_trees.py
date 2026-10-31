@@ -1,6 +1,6 @@
 """Harakat o'yinlari - Baliq ovi: game-ready firs from Poly Haven's fir_tree_01 (CC0), made in Blender.
 
-    blender -b --factory-startup --python tools/blender/fir_trees.py -- --src DIR/fir_tree_01 --out public/models/baliq-ovi/trees --tex public/textures/baliq-ovi/trees
+    blender -b --factory-startup --python tools/blender/fir_trees.py -- --src DIR/fir_tree_01 --out assets-src/models/baliq-ovi/trees --tex assets-src/textures/baliq-ovi/trees
 
 Each of the three firs in the file (0.5 - 4 million triangles of needles) becomes:
   * trunk + branches decimated to a few thousand triangles (own bark textures, 512 px),
@@ -200,8 +200,8 @@ def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True)
-    ap.add_argument("--out", default="public/models/baliq-ovi/trees")
-    ap.add_argument("--tex", default="public/textures/baliq-ovi/trees")
+    ap.add_argument("--out", default="assets-src/models/baliq-ovi/trees")
+    ap.add_argument("--tex", default="assets-src/textures/baliq-ovi/trees")
     ap.add_argument("--only", default="")
     a = ap.parse_args(argv)
     out = os.path.abspath(a.out)

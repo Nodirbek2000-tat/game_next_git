@@ -351,10 +351,14 @@ test.describe("mashina", () => {
     expect((await snap(page)).missions!.id).toBe("m2");
   });
 
-  test("kids mode: auto gas and a crash does not cost a life", async ({ page }) => {
+  test("kids mode: no automatic gas (the car stands until a knee is lifted) and a crash does not cost a life", async ({ page }) => {
     test.setTimeout(240_000);
     await boot(page, { query: "mode=erkin&time=0.45&timescale=4&traffic=0", kids: true });
-    await until(page, (s) => s.car.speed > 2); // gas is automatic
+    // standing on both legs: the pedals stay exactly 0 and the car does not move
+    await until(page, (s) => s.legs.ready && s.clock > 4, 150_000);
+    const rest = await snap(page);
+    expect(rest.input.gas).toBe(0);
+    expect(rest.car.speed).toBeLessThan(0.3);
     // aim at a building and keep going
     await page.evaluate(() => {
       const g = (window as unknown as Win).__mashina!.game;

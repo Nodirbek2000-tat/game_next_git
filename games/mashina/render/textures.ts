@@ -1,7 +1,7 @@
 import * as THREE from "three";
 
-// Small procedural canvas textures: window grid (diffuse + night emissive), asphalt grain, the road-sign atlas,
-// a soft round sprite for smoke/rain. Everything is generated on the client at mount (no files needed).
+// Small procedural canvas textures: the night windows of the facade tile, the road-sign atlas, a soft round sprite for smoke /
+// headlights and a tiny sky cube for reflections. Everything is generated on the client at mount (no files needed).
 
 function canvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const c = document.createElement("canvas");
@@ -18,47 +18,27 @@ function tex(c: HTMLCanvasElement, srgb = true, repeat = false): THREE.CanvasTex
   return t;
 }
 
-/** One window bay (3.2 m x 3.4 m): light wall with a dark window; the margin at the top-left stays plain wall colour (roofs sample it). */
-export function windowTextures(): { map: THREE.CanvasTexture; emissive: THREE.CanvasTexture } {
-  const S = 64;
-  const [c, x] = canvas(S, S);
-  x.fillStyle = "#ffffff";
-  x.fillRect(0, 0, S, S);
-  x.fillStyle = "#d9d9d9";
-  x.fillRect(0, S - 6, S, 6); // floor slab line
-  x.fillStyle = "#3b4b61";
-  x.fillRect(16, 14, 32, 30);
-  x.fillStyle = "#6f86a3";
-  x.fillRect(16, 14, 32, 8);
-  x.fillStyle = "#eef2f6";
-  x.fillRect(30, 14, 4, 30);
-  x.fillRect(16, 27, 32, 3);
-  const [e, y] = canvas(S, S);
-  y.fillStyle = "#000";
-  y.fillRect(0, 0, S, S);
-  y.fillStyle = "#ffc46b";
-  y.fillRect(17, 15, 13, 12);
-  y.fillRect(35, 31, 12, 12);
-  y.fillStyle = "#b8864a";
-  y.fillRect(35, 15, 12, 12);
-  const map = tex(c, true, true);
-  const emissive = tex(e, true, true);
-  return { map, emissive };
-}
-
-/** Fine grain for asphalt / grass so big flat areas do not look like plastic. The (0.03, 0.03) corner stays white. */
-export function grainTexture(): THREE.CanvasTexture {
-  const S = 128;
-  const [c, x] = canvas(S, S);
-  const img = x.createImageData(S, S);
-  for (let i = 0; i < S * S; i++) {
-    const n = 232 + Math.floor(Math.random() * 24);
-    img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = n;
-    img.data[i * 4 + 3] = 255;
+/**
+ * Night windows for the facade tile (public/textures/poyga/facades/facade_flats.webp: one 3.2 m bay x two floors, two panes per
+ * window). Black with a few warm panes lit, drawn where the Blender tile has its windows (fractions of the image).
+ */
+export function windowGlowTexture(): THREE.CanvasTexture {
+  const [c, x] = canvas(64, 128);
+  x.fillStyle = "#000";
+  x.fillRect(0, 0, 64, 128);
+  // [right pane (else left), bottom window (else top), colour]
+  const panes: [number, number, string][] = [
+    [0, 0, "#ffc46b"],
+    [1, 0, "#7a5a30"],
+    [0, 1, "#b8864a"],
+    [1, 1, "#ffd48a"],
+  ];
+  for (const [right, bottom, col] of panes) {
+    x.fillStyle = col;
+    const px = Math.round(64 * (right ? 0.515 : 0.285));
+    const py = Math.round(128 * (bottom ? 0.6 : 0.1));
+    x.fillRect(px, py, Math.round(64 * 0.205), Math.round(128 * (bottom ? 0.25 : 0.21)));
   }
-  x.putImageData(img, 0, 0);
-  x.fillStyle = "#fff";
-  x.fillRect(0, 0, 8, 8);
   return tex(c, true, true);
 }
 

@@ -1,6 +1,6 @@
 """Harakat o'yinlari - Baliq ovi: the first-person spinning rod set and the player's hands, modelled in Blender.
 
-    blender -b --factory-startup --python tools/blender/baliq_rod.py -- --out public/models/baliq-ovi/rod.glb
+    blender -b --factory-startup --python tools/blender/baliq_rod.py -- --out assets-src/models/baliq-ovi/rod.glb
 
 Exported WITHOUT the y-up conversion: every part is in the ROD FRAME (x = to the right of the rod, y = along the rod
 towards the tip, z = up), origin on the rod axis at the reel seat, where the right hand holds it. The game builds that
@@ -252,9 +252,9 @@ def build(out):
     line_m = mat("line", (0.85, 0.88, 0.8), rough=0.5)
     knob_m = mat("knob", (0.06, 0.06, 0.06), rough=0.55)
     ring_m = mat("ring", (0.15, 0.15, 0.16), rough=0.15, metal=0.9)
-    skin = textured("glove", "public/textures/baliq-ovi/rod/fabric_leather_02", (0.42, 0.36, 0.32), rough=0.62)
+    skin = textured("glove", "assets-src/textures/baliq-ovi/rod/fabric_leather_02", (0.42, 0.36, 0.32), rough=0.62)
     cuff_m = mat("cuff", (0.05, 0.05, 0.055), rough=0.8)
-    cloth = textured("sleeve", "public/textures/baliq-ovi/rod/denim_fabric", (1, 1, 1), rough=0.92)
+    cloth = textured("sleeve", "assets-src/textures/baliq-ovi/rod/denim_fabric", (1, 1, 1), rough=0.92)
 
     # ---- handle (y < 0 behind the seat, blank starts at the fore grip's end)
     h = []
@@ -378,7 +378,7 @@ def build(out):
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="public/models/baliq-ovi/rod.glb")
+    ap.add_argument("--out", default="assets-src/models/baliq-ovi/rod.glb")
     a = ap.parse_args(argv)
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     build(os.path.abspath(a.out))

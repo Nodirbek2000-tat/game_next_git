@@ -3,6 +3,7 @@
 
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { newGltfLoader } from "@/engine/quality/assetUrl";
 import { L_NOREFL } from "./water";
 
 export const ROD_LEN = 3.4;
@@ -301,8 +302,8 @@ const FORE = 0.29;
 
 let rodGltf: Promise<THREE.Object3D | null> | null = null;
 function loadRodGltf(): Promise<THREE.Object3D | null> {
-  rodGltf ??= import("three/examples/jsm/loaders/GLTFLoader.js")
-    .then(({ GLTFLoader }) => new GLTFLoader().loadAsync("/models/baliq-ovi/rod.glb"))
+  rodGltf ??= newGltfLoader()
+    .then((loader) => loader.loadAsync("/models/baliq-ovi/rod.glb"))
     .then((g) => g.scene)
     .catch(() => null);
   return rodGltf;

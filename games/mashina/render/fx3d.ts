@@ -63,7 +63,18 @@ export class SkidMarks {
     const ax = l[i * 3];
     const ay = l[i * 3 + 1] + 0.03;
     const az = l[i * 3 + 2];
-    p.set([ax - nx, ay, az - nz, ax + nx, ay, az + nz, x + nx, y + 0.03, z + nz, x - nx, y + 0.03, z - nz], o);
+    p[o] = ax - nx;
+    p[o + 1] = ay;
+    p[o + 2] = az - nz;
+    p[o + 3] = ax + nx;
+    p[o + 4] = ay;
+    p[o + 5] = az + nz;
+    p[o + 6] = x + nx;
+    p[o + 7] = y + 0.03;
+    p[o + 8] = z + nz;
+    p[o + 9] = x - nx;
+    p[o + 10] = y + 0.03;
+    p[o + 11] = z - nz;
     this.head = (this.head + 1) % SkidMarks.CAP;
     this.count = Math.min(SkidMarks.CAP, this.count + 1);
     l[i * 3] = x;
@@ -92,12 +103,15 @@ export class Smoke {
   private vel: Float32Array;
   private head = 0;
   private tex: THREE.Texture;
-  static readonly CAP = 120;
   /** 0..1 particle budget from engine.quality.particles */
   density = 1;
+  /** seconds until the last particle is gone (0 = nothing alive: no update work, the points are hidden) */
+  private busyT = 0;
+  private readonly cap: number;
 
-  constructor() {
-    const n = Smoke.CAP;
+  constructor(cap = 120) {
+    this.cap = cap;
+    const n = cap;
     this.pos = new Float32Array(n * 3).fill(0);
     this.age = new Float32Array(n).fill(2);
     this.vel = new Float32Array(n * 3);
@@ -119,12 +133,15 @@ export class Smoke {
     this.points = new THREE.Points(this.geo, this.mat);
     this.points.frustumCulled = false;
     this.points.renderOrder = 3;
+    this.points.visible = false;
   }
 
   emit(x: number, y: number, z: number, vx: number, vz: number): void {
     if (Math.random() > this.density) return;
     const i = this.head;
-    this.head = (this.head + 1) % Smoke.CAP;
+    this.head = (this.head + 1) % this.cap;
+    this.busyT = 1.7;
+    this.points.visible = true;
     this.pos[i * 3] = x;
     this.pos[i * 3 + 1] = y + 0.2;
     this.pos[i * 3 + 2] = z;
@@ -135,8 +152,11 @@ export class Smoke {
   }
 
   update(dt: number, viewportH: number): void {
+    if (this.busyT <= 0) return;
+    this.busyT -= dt;
+    if (this.busyT <= 0) this.points.visible = false;
     this.mat.uniforms.uScale.value = viewportH * 0.9;
-    for (let i = 0; i < Smoke.CAP; i++) {
+    for (let i = 0; i < this.cap; i++) {
       if (this.age[i] >= 1.6) continue;
       this.age[i] += dt;
       this.pos[i * 3] += this.vel[i * 3] * dt;
@@ -160,12 +180,14 @@ export class Rain {
   readonly lines: THREE.LineSegments;
   private geo: THREE.BufferGeometry;
   private mat: THREE.ShaderMaterial;
-  static readonly N = 700;
+  /** streaks allocated (the count of the level at full rain) */
+  private readonly N: number;
 
-  constructor() {
-    const p = new Float32Array(Rain.N * 6);
-    const seed = new Float32Array(Rain.N * 2);
-    for (let i = 0; i < Rain.N; i++) {
+  constructor(n = 700) {
+    this.N = n;
+    const p = new Float32Array(n * 6);
+    const seed = new Float32Array(n * 2);
+    for (let i = 0; i < n; i++) {
       const x = (Math.random() - 0.5) * 60;
       const y = Math.random() * 30;
       const z = (Math.random() - 0.5) * 60;
@@ -201,7 +223,8 @@ export class Rain {
     this.mat.uniforms.uTime.value = t;
     this.mat.uniforms.uCenter.value.copy(cam);
     this.mat.uniforms.uAlpha.value = amount;
-    this.geo.setDrawRange(0, Math.floor(Rain.N * Math.min(1, amount)) * 2);
+    this.lines.visible = amount > 0.01;
+    this.geo.setDrawRange(0, Math.floor(this.N * Math.min(1, amount)) * 2);
   }
 
   dispose(): void {
@@ -233,5 +256,41 @@ export class Beacon {
   dispose(): void {
     this.mesh.geometry.dispose();
     this.mat.dispose();
+  }
+}
+
+/**
+ * Headlights at night without a light source (a spot light would add a shader variant to every material and switch it at dusk):
+ * one additive soft pool on the road ahead of the car, drawn with the soft round sprite stretched along the heading.
+ */
+export class HeadGlow {
+  readonly mesh: THREE.Mesh;
+  private mat: THREE.MeshBasicMaterial;
+  private tex: THREE.Texture;
+
+  constructor() {
+    this.tex = dotTexture();
+    this.mat = new THREE.MeshBasicMaterial({ map: this.tex, color: 0xffe9b8, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false, toneMapped: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), this.mat);
+    this.mesh.visible = false;
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = 2;
+  }
+
+  /** night 0..1; (x, z) the car, (fx, fz) its heading, y the road height under it */
+  update(night: number, x: number, y: number, z: number, fx: number, fz: number): void {
+    const on = night > 0.3;
+    this.mesh.visible = on;
+    if (!on) return;
+    this.mat.opacity = 0.42 * Math.min(1, (night - 0.3) * 2);
+    this.mesh.position.set(x + fx * 10, y + 0.06, z + fz * 10);
+    this.mesh.rotation.y = Math.atan2(fx, fz);
+    this.mesh.scale.set(8, 1, 20);
+  }
+
+  dispose(): void {
+    this.mesh.geometry.dispose();
+    this.mat.dispose();
+    this.tex.dispose();
   }
 }

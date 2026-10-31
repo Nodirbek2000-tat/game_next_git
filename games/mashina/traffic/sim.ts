@@ -53,7 +53,13 @@ export interface Obstacle {
 const BOX = 6;
 const CAR_LEN: Record<AiType, number> = { sedan: 4.4, krossover: 4.6, truck: 8.8, van: 5.1 };
 
-const key = (e: Edge): string => `${e.from}>${e.to}`;
+// (edges live as long as the layout: the key string is made once per edge, not once per car and frame)
+const KEYS = new WeakMap<Edge, string>();
+const key = (e: Edge): string => {
+  let k = KEYS.get(e);
+  if (k === undefined) KEYS.set(e, (k = `${e.from}>${e.to}`));
+  return k;
+};
 const rightOf = (e: Edge): [number, number] => [-e.dz, e.dx];
 
 export class TrafficSim {
@@ -64,6 +70,8 @@ export class TrafficSim {
   private occ = new Map<string, Set<AiCar>>();
   /** target number of cars near the player */
   density = 1;
+  /** cars appear this far from the player at most (m): the game keeps it inside the view of the quality level, so no car is simulated out of sight */
+  spawnMax = 250;
   /** counters for tests / HUD */
   overtakes = 0;
   spawned = 0;
@@ -129,18 +137,19 @@ export class TrafficSim {
   }
 
   private rebuildIndex(): void {
-    this.edgeCars.clear();
+    // (the lists are emptied and reused: one per edge, no new array per frame)
+    for (const l of this.edgeCars.values()) l.length = 0;
     for (const c of this.cars) {
       const k = key(c.conn ? c.conn.next : c.edge);
       // cars in a connector count for the NEXT edge (as leaders of whoever follows them) at s ~ 0
-      const l = this.edgeCars.get(k) ?? [];
+      let l = this.edgeCars.get(k);
+      if (!l) this.edgeCars.set(k, (l = []));
       l.push(c);
-      this.edgeCars.set(k, l);
       if (c.conn) {
         const k2 = key(c.edge);
-        const l2 = this.edgeCars.get(k2) ?? [];
+        let l2 = this.edgeCars.get(k2);
+        if (!l2) this.edgeCars.set(k2, (l2 = []));
         l2.push(c);
-        this.edgeCars.set(k2, l2);
       }
     }
   }
@@ -441,13 +450,15 @@ export class TrafficSim {
   }
 
   private manage(p: Obstacle): void {
-    // release
-    this.cars = this.cars.filter((c) => {
-      const d = Math.hypot(c.x - p.x, c.z - p.z);
-      const gone = d > 330 || c.age > 1e8;
+    // release (in place: no new array per frame)
+    const cars = this.cars;
+    let n = 0;
+    for (const c of cars) {
+      const gone = Math.hypot(c.x - p.x, c.z - p.z) > this.spawnMax + 80 || c.age > 1e8;
       if (gone) this.releaseAll(c);
-      return !gone;
-    });
+      else cars[n++] = c;
+    }
+    cars.length = n;
     const want = Math.round(10 * this.density);
     if (this.cars.length >= want) return;
     if (this.rng() > 0.08) return;
@@ -461,7 +472,7 @@ export class TrafficSim {
       const x = A.x + e.dx * s;
       const z = A.z + e.dz * s;
       const dp = Math.hypot(x - p.x, z - p.z);
-      if (dp < 90 || dp > 250) continue;
+      if (dp < 90 || dp > this.spawnMax) continue;
       // keep away from airfield / plaza ends
       if (B.kind === "airfield" && A.kind === "airfield") continue;
       const lane = e.highway ? Math.floor(this.rng() * Math.min(2, e.lanes)) + (e.lanes > 2 ? 1 : 0) : 0;

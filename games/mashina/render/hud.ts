@@ -203,7 +203,7 @@ function drawPedals(c: CanvasRenderingContext2D, px: number, py: number, ph: num
   const g = m.legs;
   const bars: { lbl: string; sub: string; raw: number; thr: number; out: number; ok: boolean; col: string }[] = [
     { lbl: "T", sub: "chap tizza", raw: g.brakeRaw, thr: g.brakeThr, out: m.brake, ok: g.keys || (g.ready && g.okBrake), col: "#ff4d4d" },
-    { lbl: "G", sub: "o‘ng tizza", raw: g.gasRaw, thr: g.gasThr, out: m.gas, ok: g.keys || m.kids || (g.ready && g.okGas), col: "#34d399" },
+    { lbl: "G", sub: "o‘ng tizza", raw: g.gasRaw, thr: g.gasThr, out: m.gas, ok: g.keys || (g.ready && g.okGas), col: "#34d399" },
   ];
   bars.forEach((b, i) => {
     const x = px + i * 64 * u;

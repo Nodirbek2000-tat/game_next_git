@@ -17,15 +17,27 @@ export interface Tuning {
 
 export const TUNING = {
   cast: {
-    /** downward wrist speed (screen heights / s) that counts as the forward flick */
-    swingSpeed: 0.95,
+    /** the forward stroke of the arm starts when the hand moves down faster than this (screen heights / s) */
+    swingSpeed: 1.0,
     kidsSwingSpeed: 0.7,
+    /** a stroke counts only if its peak reaches this (a lazy drop of the arm stays under it); this peak = the shortest cast */
+    minPeak: 1.25,
+    kidsMinPeak: 0.9,
+    /** stroke peak speed of a full power cast */
+    peakMax: 2.6,
+    /** the hand must come down at least this far (body scales) from its highest point during the stroke */
+    minDrop: 0.35,
+    /** the stroke ends (the line is released) when the speed falls under this part of its peak, or after maxStroke seconds */
+    endFrac: 0.6,
+    maxStroke: 0.4,
     /** the raised hand stays "armed" this long (s) */
     armWindow: 1.6,
     /** minimum time between casts (s) */
     cooldown: 0.6,
-    peakMax: 2.6,
-    minPower: 0.3,
+    /** the pose must be tracked this long (s) before a stroke counts (a hand that just came back into view jumps) */
+    settle: 0.25,
+    /** power of the keyboard flick */
+    keyPower: 0.75,
     baseDist: 8,
     powerDist: 28,
     kidsPowerDist: 18,
@@ -33,8 +45,10 @@ export const TUNING = {
     yawGain: 13,
     flyBase: 0.7,
     flyPower: 0.6,
+    /** the rod bends back by this much per (screen height / s) of downward hand speed */
+    bendGain: 0.3,
   },
-  strike: { upSpeed: 1.05, kidsUpSpeed: 0.8, window: 0.95, kidsWindow: 1.7, cooldown: 0.6 },
+  strike: { upSpeed: 1.05, kidsUpSpeed: 0.8, window: 0.95, kidsWindow: 1.7, cooldown: 0.6, jerk: 9 },
   fight: {
     limit: 1,
     kidsLimit: 1.35,
@@ -49,6 +63,46 @@ export const TUNING = {
     reelGain: 0.8,
     kidsPull: 0.6,
     pumpPull: 0.45,
+    /** chance that the next run goes to the other side (runs alternate left / right more often than not) */
+    flipChance: 0.75,
+    /** run length factor: small fish (0) run short, big strong fish (1) run long */
+    runLenSmall: 0.65,
+    runLenBig: 1.35,
+    /** rests between runs: small fish rest longer */
+    restSmall: 1.15,
+    restBig: 0.75,
+    /** extra tension (x the fish's pull) while it pulls sideways and the player does not lean against it */
+    sideTension: 0.3,
+    /** extra line the fish takes while it pulls sideways and is not countered */
+    sideOut: 0.35,
+    /** a run counts as "surging" (splash) when its side pull passes this */
+    surgeAt: 0.65,
+    /** fish pull that counts as fully heavy for the reel */
+    heavyRef: 1.1,
+    /** how much less line one reel turn brings in against a fully heavy running fish */
+    heavyDrag: 0.45,
+  },
+  /** steering the fish with the rod hand: the sideways shift of the hand (body scales) that counts as full, and how fast "neutral" follows the hand (s) */
+  steer: { range: 0.5, tau: 6 },
+  /** the reel crank, tracked from the circling hand (circles per second) */
+  reel: {
+    /** the circle centre follows the hand with this time constant (s) */
+    centerTau: 0.35,
+    /** the circle must be wider than this (body scales) */
+    minRadius: 0.11,
+    /** a larger turn between two frames (rad) is a tracking glitch */
+    maxStep: 2.6,
+    /** the turn speed estimate rises / falls with these time constants (s): stopping the hand stops the reel at once */
+    attack: 0.12,
+    release: 0.06,
+    /** reeling starts above `on` circles/s and stops under `off` */
+    on: 0.35,
+    off: 0.2,
+    max: 2.6,
+    /** hand speed (body scales / s) under which the hand stands still */
+    stillSpeed: 0.15,
+    /** +1 / -1: which way the drawn reel handle turns for a clockwise circle of the hand (flip it if it looks reversed) */
+    visualSign: 1,
   },
   pump: { upSpeed: 0.9, downSpeed: 0.5, window: 1.2, lowerBonus: 1.6 },
   net: { downWindow: 1.6, hipTol: 0.1, upLift: 0.25, cooldown: 1.2 },
@@ -64,9 +118,14 @@ const sens = (base: number, s: number): number => base / clamp(s, 0.5, 1.5);
 
 // ---------------------------------------------------------------- cast
 
-export function castPower(peak: number, kids = false): number {
-  void kids;
-  return clamp(peak / TUNING.cast.peakMax, TUNING.cast.minPower, 1);
+/** Smallest stroke peak that counts as a cast (screen heights / s), with the sensitivity / kids setting applied. */
+export function minStrokePeak(t: Tuning): number {
+  return sens(t.kids ? TUNING.cast.kidsMinPeak : TUNING.cast.minPeak, t.sensitivity);
+}
+/** 0..1 cast power from the peak speed of the arm's forward stroke: a just-valid flick gives 0, `peakMax` and above gives 1. */
+export function strokePower(peak: number, t: Tuning): number {
+  const lo = minStrokePeak(t);
+  return clamp((peak - lo) / Math.max(0.1, TUNING.cast.peakMax - lo), 0, 1);
 }
 export function castDistance(power: number, kids: boolean, maxCast = 36): number {
   return Math.min(maxCast, TUNING.cast.baseDist + power * (kids ? TUNING.cast.kidsPowerDist : TUNING.cast.powerDist));
@@ -82,29 +141,55 @@ export function castFlightTime(power: number): number {
 export interface CastResult {
   fired: boolean;
   power: number;
+  /** hand sideways offset averaged over the stroke (the aim) */
+  aim: number;
+  /** true for a real arm stroke (false for the keyboard flick): the rod animation starts from the live pose */
+  viaHand: boolean;
 }
 
-/** Raise the rod hand above the shoulder, then flick it forward (downwards in the camera image). */
+/**
+ * The overhead cast: the rod hand goes up and back (above the shoulder = "armed"), then whips forward (down in the camera
+ * image). The stroke is measured from its start to its end: power comes from its peak speed, the aim from where the hand
+ * was during the stroke. The line is released when the arm decelerates (the end of the stroke), like a real cast.
+ * A lazy drop of the arm (low peak), a short jerk (hand did not come down far) or a one frame spike is not a cast.
+ */
 export class CastDetector {
   armed = false;
+  /** a forward stroke is under way */
+  stroking = false;
   private armedT = 0;
-  private peak = 0;
   private since = 10;
-  readonly out: CastResult = { fired: false, power: 0 };
+  private top = -9;
+  private strokeT = 0;
+  private peak = 0;
+  private aimSum = 0;
+  private aimN = 0;
+  readonly out: CastResult = { fired: false, power: 0, aim: 0, viaHand: false };
 
   reset(): void {
-    this.armed = false;
-    this.armedT = 0;
-    this.peak = 0;
+    this.disarm();
     this.since = 0;
   }
 
-  /** `down` is the rod wrist speed in screen heights/s (positive = moving down), `key` the keyboard flick. */
-  update(dt: number, handUp: boolean, down: number, t: Tuning, key = false): CastResult {
+  private disarm(): void {
+    this.armed = false;
+    this.stroking = false;
+    this.armedT = 0;
+    this.top = -9;
+    this.peak = 0;
+    this.strokeT = 0;
+  }
+
+  /**
+   * `down`: rod wrist speed in screen heights/s (positive = moving down); `elev`: its height above the shoulder in body
+   * scales; `aim`: its sideways offset from the shoulder in body scales; `key`: the keyboard flick.
+   */
+  update(dt: number, handUp: boolean, down: number, elev: number, aim: number, t: Tuning, key = false): CastResult {
     const c = TUNING.cast;
     const o = this.out;
     o.fired = false;
     o.power = 0;
+    o.viaHand = false;
     this.since += dt;
     if (handUp || key) {
       this.armed = true;
@@ -112,19 +197,43 @@ export class CastDetector {
     }
     if (this.armed) {
       this.armedT += dt;
-      this.peak = Math.max(this.peak, down);
-      if (this.armedT > c.armWindow) {
-        this.armed = false;
-        this.peak = 0;
-      }
+      this.top = Math.max(this.top, elev);
+      if (this.armedT > c.armWindow) this.disarm();
     }
-    const thr = sens(t.kids ? c.kidsSwingSpeed : c.swingSpeed, t.sensitivity);
-    if (this.armed && (down > thr || key) && this.since > c.cooldown) {
+    if (key && this.since > c.cooldown) {
       o.fired = true;
-      o.power = castPower(Math.max(this.peak, down, key ? 2 : 0), t.kids);
-      this.armed = false;
-      this.peak = 0;
+      o.power = c.keyPower;
+      o.aim = aim;
+      this.disarm();
       this.since = 0;
+      return o;
+    }
+    if (!this.armed || this.since <= c.cooldown) return o;
+    if (!this.stroking && down > sens(t.kids ? c.kidsSwingSpeed : c.swingSpeed, t.sensitivity)) {
+      this.stroking = true;
+      this.strokeT = 0;
+      this.peak = 0;
+      this.aimSum = 0;
+      this.aimN = 0;
+    }
+    if (this.stroking) {
+      this.strokeT += dt;
+      this.peak = Math.max(this.peak, down);
+      this.aimSum += aim;
+      this.aimN++;
+      if (down < this.peak * c.endFrac || this.strokeT >= c.maxStroke) {
+        const drop = this.top - elev;
+        const real = this.peak >= minStrokePeak(t) && drop >= c.minDrop;
+        this.stroking = false;
+        if (real) {
+          o.fired = true;
+          o.viaHand = true;
+          o.power = strokePower(this.peak, t);
+          o.aim = this.aimSum / Math.max(1, this.aimN);
+          this.disarm();
+          this.since = 0;
+        } else this.peak = 0; // noise or a lazy drop: still armed, try again
+      }
     }
     return o;
   }
@@ -218,9 +327,23 @@ export function counterPull(runDir: number, side: number): number {
   return clamp((-runDir * side - 0.3) / 0.7, 0, 1);
 }
 
+/** Side pull of a run, 0..1: it builds up, peaks in the middle of the run and eases off (`u` = how far the run is, 0..1). */
+export function surgeEnvelope(u: number): number {
+  return Math.pow(Math.sin(Math.PI * clamp(u, 0, 1)), 0.8);
+}
+
+/** 0..1: how much a fish of this pull (and the player's reeling) is "big and strong" (small fish run short and weak). */
+export function bigness(pull: number): number {
+  return clamp((pull - 0.2) / 0.8, 0, 1);
+}
+
 /**
  * The fight: tension T (0..~1.2, red above 0.85), distance D (m) to the rod, fish stamina S, left/right runs and jumps.
  * Ported from the prototype (`Fishing.hook/fight`) with dt based smoothing.
+ *
+ * Left / right: the fish runs to one side (`runDir`) with a side pull `surge` that builds up, peaks and fades during the run, then
+ * rests, then usually runs to the other side. While the pull is not countered (rod hand moved to the opposite side) it adds
+ * tension and takes line; countered it does not, and the run tires out sooner. Small fish run short and weak, big ones long and hard.
  */
 export class FightModel {
   D: number;
@@ -228,6 +351,9 @@ export class FightModel {
   S = 1;
   run = true;
   runT: number;
+  /** length of the current run / rest (s) and the strength of this run (0.55..1) */
+  private runLen: number;
+  private runAmp: number;
   /** current retrieve speed (m/s), eased */
   reelV = 0;
   /** seconds since the strike */
@@ -241,30 +367,41 @@ export class FightModel {
   readonly maxAng: number;
   /** how well the player leans against the run right now (0..1) */
   counter = 0;
+  /** side pull right now, 0..1 (0 while it rests); with `runDir` it says which way and how hard the fish pulls */
+  surge = 0;
+  /** how hard the fish pulls against the reel right now, 0..1 (reeling is heavier and slower the bigger it is) */
+  heavy = 0;
   /** > 0 while the fish is in the air (s) */
   jumpT = 0;
-  /** true on the frame a jump started / a run started */
+  /** true on the frame a jump started / a run started / the side pull peaked (splash) */
   jumped = false;
   ranNow = false;
+  surged = false;
   overT = 0;
   readonly pull: number;
   readonly limit: number;
   readonly startD: number;
+  /** 0..1: how big and strong this fish is */
+  readonly big: number;
+  private surgedRun = false;
   private wob: number;
   constructor(readonly p: FightParams) {
     const { species, weight, kids, rng } = p;
-    this.pull = species.power * (0.55 + Math.min(1, weight / 14) * 0.5) * (kids ? TUNING.fight.kidsPull : 1);
+    const raw = species.power * (0.55 + Math.min(1, weight / 14) * 0.5);
+    this.pull = raw * (kids ? TUNING.fight.kidsPull : 1);
+    this.big = bigness(raw);
     this.limit = kids ? TUNING.fight.kidsLimit : TUNING.fight.limit;
     this.D = this.startD = p.startD;
-    this.runT = 1 + rng();
+    this.runT = this.runLen = 1 + rng();
+    this.runAmp = 0.55 + rng() * 0.45;
     this.wob = rng() * 6.28;
     this.runDir = rng() < 0.5 ? -1 : 1;
     this.maxAng = 0.1 + species.power * 0.3 + Math.min(1, weight / 10) * 0.1;
   }
 
-  /** -1 / 0 / 1: the side the fish is pulling to right now (0 while it rests) */
+  /** -1 / 0 / 1: the side the fish is pulling to right now (0 while it rests or has not built up its pull yet) */
   get pullDir(): number {
-    return this.run && Math.abs(this.ang) > 0.04 ? Math.sign(this.ang) : 0;
+    return this.run && this.surge > 0.12 ? this.runDir : 0;
   }
 
   /** current strain of the line relative to the break limit (1 = about to snap) */
@@ -277,13 +414,18 @@ export class FightModel {
     const F = TUNING.fight;
     this.jumped = false;
     this.ranNow = false;
+    this.surged = false;
     this.runT -= dt;
     if (this.runT <= 0) {
       this.run = !this.run;
-      this.runT = this.run ? (0.9 + rng() * 1.3) * (0.6 + this.S * 0.6) : 1.3 + rng() * 1.7;
+      this.runT = this.runLen = this.run
+        ? (0.9 + rng() * 1.3) * (0.6 + this.S * 0.6) * lerp(F.runLenSmall, F.runLenBig, this.big)
+        : (1.3 + rng() * 1.7) * lerp(F.restSmall, F.restBig, this.big);
       if (this.run) {
         this.ranNow = true;
-        this.runDir = rng() < 0.5 ? -this.runDir : this.runDir;
+        this.surgedRun = false;
+        this.runAmp = 0.55 + rng() * 0.45;
+        this.runDir = rng() < F.flipChance ? -this.runDir : this.runDir;
         // strong fish sometimes leap out of the water
         if (this.p.species.power > 0.45 && rng() < 0.25 + this.p.species.power * 0.3 && this.D > 3) {
           this.jumpT = 0.75;
@@ -292,22 +434,34 @@ export class FightModel {
       }
     }
     this.jumpT = Math.max(0, this.jumpT - dt);
-    const pullNow = this.pull * (this.run ? 0.75 + this.S * 0.55 : 0.28);
+    // the side pull of this run: builds up, peaks, eases off
+    const surgeTarget = this.run ? this.runAmp * surgeEnvelope(1 - this.runT / this.runLen) : 0;
+    this.surge = lerp(this.surge, surgeTarget, 1 - Math.exp(-dt * 8));
+    if (this.run && !this.surgedRun && this.surge > F.surgeAt) {
+      this.surgedRun = true;
+      this.surged = true;
+    }
+    const pullNow = this.pull * (this.run ? (0.75 + this.S * 0.55) * (0.82 + 0.36 * this.surge) : 0.28);
     const r = inp.crank;
     this.counter = this.run && !kids ? counterPull(this.runDir, inp.side ?? 0) : 0;
     if (this.counter > 0) this.runT -= dt * this.counter * 1.4; // a firm side pull tires the run out sooner
-    const targetT = (pullNow * 0.8 + r * 0.26 * (this.run ? 1.25 : 1) + inp.pump + (this.jumpT > 0 ? r * 0.2 : 0)) * (1 - 0.3 * this.counter);
+    // a pull to the side that is not countered adds tension (kids: only the cue, no penalty)
+    const sideT = kids ? 0 : F.sideTension * pullNow * this.surge * (1 - this.counter);
+    const targetT = (pullNow * 0.8 + r * 0.26 * (this.run ? 1.25 : 1) + inp.pump + (this.jumpT > 0 ? r * 0.2 : 0)) * (1 - 0.3 * this.counter) + sideT;
     this.T = lerp(this.T, targetT, 1 - Math.exp(-dt * 4));
     this.age += dt;
+    // reeling against a hard pulling fish brings in less line per turn: it feels heavier
+    this.heavy = clamp(pullNow / F.heavyRef, 0, 1);
+    const reelEff = 1 - F.heavyDrag * this.heavy * (this.run ? 1 : 0.25);
     // the line comes in smoothly (the spool speeds up / slows down, no jumps when the hand starts or stops)
-    this.reelV = lerp(this.reelV, r * F.reelGain * inp.reelMul + inp.pump * 1.4, 1 - Math.exp(-dt * 3));
-    const dD = -this.reelV + (this.run ? pullNow * 1.8 * (1 - Math.min(0.8, r * 0.3)) : 0);
-    this.D = Math.max(0, this.D + dD * dt);
-    this.S = Math.max(0, this.S - dt * (0.035 + this.T * 0.07));
+    this.reelV = lerp(this.reelV, r * F.reelGain * inp.reelMul * reelEff + inp.pump * 1.4, 1 - Math.exp(-dt * 3));
+    const out = this.run ? pullNow * 1.8 * (1 - Math.min(0.8, r * 0.3)) * (1 + (kids ? 0 : F.sideOut * this.surge * (1 - this.counter))) : 0;
+    this.D = Math.max(0, this.D + (-this.reelV + out) * dt);
+    this.S = Math.max(0, this.S - dt * (0.035 + this.T * 0.07 + this.counter * 0.03));
     // left / right
     this.wob += dt * (this.run ? 3 : 1.2);
     const wide = this.maxAng * (0.45 + 0.55 * this.S);
-    const targetAng = this.run ? this.runDir * wide + Math.sin(this.wob) * 0.3 * wide : Math.sin(this.wob) * wide * 0.3;
+    const targetAng = this.run ? this.runDir * wide * (0.25 + 0.75 * this.surge) + Math.sin(this.wob) * 0.25 * wide : Math.sin(this.wob) * wide * 0.3;
     this.ang = lerp(this.ang, targetAng, 1 - Math.exp(-dt * (this.run ? 3.2 : 1.8)));
     this.lat = Math.min(this.D, 40) * Math.sin(this.ang);
     // line break

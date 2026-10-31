@@ -19,6 +19,8 @@ export class CameraRig {
   private t = 0;
   private fov = 60;
   private ready = false;
+  /** far plane (m): the game sets it to the haze end of the quality level */
+  far = 400;
 
   constructor(private cam: THREE.PerspectiveCamera) {}
 
@@ -91,10 +93,10 @@ export class CameraRig {
     cam.lookAt(this.look);
     const fov = this.mode === "chase" ? 60 + clamp(sp * 0.35, 0, 16) : 72 + clamp(sp * 0.2, 0, 8);
     this.fov += (fov - this.fov) * (1 - Math.exp(-dt * 4));
-    if (Math.abs(cam.fov - this.fov) > 0.15 || cam.near !== 0.2) {
+    if (Math.abs(cam.fov - this.fov) > 0.15 || cam.near !== 0.2 || cam.far !== this.far) {
       cam.fov = this.fov;
       cam.near = 0.2;
-      cam.far = 1500;
+      cam.far = this.far;
       cam.updateProjectionMatrix();
     }
   }

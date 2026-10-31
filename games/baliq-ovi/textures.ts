@@ -33,7 +33,7 @@ export function seededRng(seed = 1): () => number {
 }
 
 /** Tileable normal map (RGB) with the height field in alpha. */
-export function makeWaterNormal(size = 256, seed = 7): THREE.DataTexture {
+export function makeWaterNormal(size = 256, seed = 7, aniso = 4): THREE.DataTexture {
   const rng = seededRng(seed);
   const terms: { fx: number; fy: number; a: number; ph: number }[] = [];
   for (let i = 0; i < 14; i++) {
@@ -73,7 +73,7 @@ export function makeWaterNormal(size = 256, seed = 7): THREE.DataTexture {
   t.minFilter = THREE.LinearMipmapLinearFilter;
   t.magFilter = THREE.LinearFilter;
   t.generateMipmaps = true;
-  t.anisotropy = 4;
+  t.anisotropy = aniso;
   t.needsUpdate = true;
   return t;
 }

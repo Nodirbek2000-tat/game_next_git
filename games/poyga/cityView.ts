@@ -1,11 +1,15 @@
 import * as THREE from "three";
+import { texUrl } from "@/engine/quality/assetUrl";
+import type { QualityLevel } from "@/engine/types";
+import { LOD } from "./config";
+import { warmTriangle } from "./models";
 import { type BlockPlan, type Building, CURB, CURB_H, HW, LANE, PITCH, STOP, WALK, ihash, junction, plan, segX, segZ, signal, unwarp, warpX, warpZ } from "./city";
 
 /**
  * Renders the open city around the car, block by block (the look of tools/blender/street.py: clean plaster blocks with
  * recessed dark windows and balconies, smooth round plane trees, tiled pavements, real asphalt). Each block tile is a
  * few merged meshes (asphalt, pavement, ground, buildings, glass, leaves, glow, signs); tiles further than `radius`
- * blocks are dropped.
+ * blocks are dropped. Tiles are built a few at a time (`work`), so a frame never stalls on a whole ring of new blocks.
  */
 
 const PLAIN = 4;
@@ -303,25 +307,43 @@ export class CityView {
   readonly flatsMat: THREE.MeshStandardMaterial;
   readonly shopMat: THREE.MeshStandardMaterial;
   private glowBase: THREE.MeshBasicMaterial;
-  private far: THREE.Mesh;
   private floor: THREE.Mesh;
+  /** one hidden triangle per material, so the engine's start-up shader precompile sees every tile material */
+  private warm = new THREE.Group();
+  private warmGeo = warmTriangle();
+  /** tiles still to build: [i, j, distance from the car in blocks], nearest first */
+  private queue: [number, number, number][] = [];
+  private ci = NaN;
+  private cj = NaN;
+  private dirty = true;
+  private sigAt = -1;
+  private disposed = false;
+  private p: [number, number] = [0, 0];
 
   constructor(
-    aniso: number,
+    gl: THREE.WebGLRenderer,
+    level: QualityLevel,
     private shadows: boolean,
-    private radius = 2,
+    private radius = LOD[level].tileR,
   ) {
+    const lod = LOD[level];
+    const aniso = Math.min(gl.capabilities.getMaxAnisotropy(), lod.aniso);
     const grain = grainTexture(aniso);
-    // CC0 PBR materials (ambientCG): asphalt Road012A, paving PavingStones099, concrete Concrete034, grass Grass004
+    // a big texture goes to the GPU when it arrives, not all at once in the first frame that draws it
+    const upload = (t: THREE.Texture) => {
+      if (!this.disposed) gl.initTexture(t);
+    };
+    // CC0 PBR materials (ambientCG): asphalt Road012A, paving PavingStones099, concrete Concrete034, grass Grass004.
+    // The lite level skips the normal and roughness maps (two texture reads and the bump maths per pixel).
     const pbr = (name: string, color = true) => {
       const load = (k: string, srgb: boolean) => {
-        const t = new THREE.TextureLoader().load(`/textures/poyga/pbr/${name}_${k}.jpg`);
+        const t = new THREE.TextureLoader().load(texUrl(`/textures/poyga/pbr/${name}_${k}`, level), upload);
         t.wrapS = t.wrapT = THREE.RepeatWrapping;
         t.anisotropy = aniso;
         if (srgb) t.colorSpace = THREE.SRGBColorSpace;
         return t;
       };
-      return { map: color ? load("color", true) : undefined, normalMap: load("normal", false), roughnessMap: load("rough", false) };
+      return { map: color ? load("color", true) : undefined, normalMap: lod.pbrMaps ? load("normal", false) : undefined, roughnessMap: lod.pbrMaps ? load("rough", false) : undefined };
     };
     this.roadMat = new THREE.MeshStandardMaterial({ ...pbr("road"), color: new THREE.Color(0.62, 0.62, 0.64), roughness: 1, envMapIntensity: 0.3, normalScale: new THREE.Vector2(1.2, 1.2) });
     this.walkMat = new THREE.MeshStandardMaterial({ ...pbr("paving"), vertexColors: true, roughness: 1, envMapIntensity: 0.4 });
@@ -334,7 +356,7 @@ export class CityView {
     this.signMat = new THREE.MeshBasicMaterial({ map: signTexture(), toneMapped: false, color: new THREE.Color(0.85, 0.85, 0.85) });
     // facade tiles rendered in Blender (tools/blender/buildings.py): one bay x two floors, and the shop floor
     const ftex = (name: string) => {
-      const t = new THREE.TextureLoader().load(`/textures/poyga/facades/${name}.png`);
+      const t = new THREE.TextureLoader().load(texUrl(`/textures/poyga/facades/${name}`, level), upload);
       t.wrapS = t.wrapT = THREE.RepeatWrapping;
       t.colorSpace = THREE.SRGBColorSpace;
       t.anisotropy = aniso;
@@ -345,49 +367,82 @@ export class CityView {
     this.shopMat = new THREE.MeshStandardMaterial({ map: shop, vertexColors: true, roughness: 0.6, envMapIntensity: 0.6, emissive: new THREE.Color(0xffffff), emissiveMap: shop, emissiveIntensity: 0.18 });
     this.glowBase = glowMaterial();
     // (the photo sky is the backdrop: no geometric mountains)
-    this.far = this.makeFar();
-    this.far.visible = false;
     this.floor = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x6f6a58, roughness: 1 }));
     // well below the asphalt: the post-processing depth buffer is coarse, a floor 2 cm under the road z-fights with it
     this.floor.position.y = -0.6;
     this.floor.receiveShadow = shadows;
+    this.floor.matrixAutoUpdate = false;
     this.group.add(this.floor);
+    // (the hidden triangles have the attributes of a tile mesh, so the shader variants match the real ones)
+    for (const m of [this.roadMat, this.paintMat, this.curbMat, this.walkMat, this.groundMat, this.bldgMat, this.glassMat, this.leafMat, this.glowBase, this.flatsMat, this.shopMat, this.signMat]) this.warm.add(new THREE.Mesh(this.warmGeo, m));
+    this.warm.visible = false;
+    this.group.add(this.warm);
   }
 
   get count(): number {
     return this.tiles.size;
   }
 
-  /** stream the tiles around (x, z); build at most `budget` per call; update the traffic lights */
-  update(x: number, z: number, t: number, budget = 1): void {
-    const [px, pz] = unwarp(x, z);
+  /** tiles waiting to be built */
+  get pending(): number {
+    return this.queue.length;
+  }
+
+  /** how many blocks around the car are drawn in detail (takes effect at the next `update`) */
+  setRadius(r: number): void {
+    if (r === this.radius) return;
+    this.radius = r;
+    this.dirty = true;
+  }
+
+  /** Drop the tiles that are too far, queue the missing ones (nearest first), update the traffic lights. Builds nothing: see `work`. */
+  update(x: number, z: number, t: number): void {
+    const [px, pz] = unwarp(x, z, this.p);
     const ci = Math.floor(px / PITCH);
     const cj = Math.floor(pz / PITCH);
-    const R = this.radius;
-    for (const [k, tl] of this.tiles)
-      if (Math.abs(tl.i - ci) > R + 1 || Math.abs(tl.j - cj) > R + 1) {
-        this.group.remove(tl.group);
-        for (const g of tl.geos) g.dispose();
-        tl.glow?.dispose();
-        this.tiles.delete(k);
-      }
-    // nearest first
-    const want: [number, number, number][] = [];
-    for (let i = ci - R; i <= ci + R; i++) for (let j = cj - R; j <= cj + R; j++) if (!this.tiles.has(`${i},${j}`)) want.push([i, j, Math.hypot(i + 0.5 - px / PITCH, j + 0.5 - pz / PITCH)]);
-    want.sort((a, b) => a[2] - b[2]);
-    for (let n = 0; n < Math.min(budget, want.length); n++) {
-      const [i, j] = want[n];
-      const tl = this.build(i, j);
-      this.tiles.set(tl.key, tl);
+    if (ci !== this.ci || cj !== this.cj || this.dirty) {
+      this.ci = ci;
+      this.cj = cj;
+      this.dirty = false;
+      const R = this.radius;
+      for (const [k, tl] of this.tiles)
+        if (Math.abs(tl.i - ci) > R + 1 || Math.abs(tl.j - cj) > R + 1) {
+          this.group.remove(tl.group);
+          for (const g of tl.geos) g.dispose();
+          tl.glow?.dispose();
+          this.tiles.delete(k);
+        }
+      this.queue.length = 0;
+      for (let i = ci - R; i <= ci + R; i++)
+        for (let j = cj - R; j <= cj + R; j++) if (!this.tiles.has(`${i},${j}`)) this.queue.push([i, j, Math.hypot(i + 0.5 - px / PITCH, j + 0.5 - pz / PITCH)]);
+      this.queue.sort((a, b) => a[2] - b[2]);
     }
-    for (const tl of this.tiles.values()) {
-      if (!tl.glow) continue;
-      const u = tl.glow.userData.uSig as { value: THREE.Vector2 };
-      u.value.set(signal("x", tl.i, tl.j, t), signal("z", tl.i, tl.j, t));
+    // the signal states change every few seconds: ten updates a second are plenty
+    if (t - this.sigAt > 0.1 || t < this.sigAt) {
+      this.sigAt = t;
+      for (const tl of this.tiles.values()) {
+        if (!tl.glow) continue;
+        const u = tl.glow.userData.uSig as { value: THREE.Vector2 };
+        u.value.set(signal("x", tl.i, tl.j, t), signal("z", tl.i, tl.j, t));
+      }
     }
     this.floor.position.x = x;
     this.floor.position.z = z;
-    this.far.position.set(x, 0, z);
+    this.floor.updateMatrix();
+  }
+
+  /**
+   * Build the queued tiles, nearest first, until `until` (a performance.now() time). The tiles under and right next to the
+   * car are always built: driving onto a missing tile would show the bare floor.
+   */
+  work(until: number): void {
+    while (this.queue.length) {
+      const q = this.queue[0];
+      if (q[2] > 0.8 && performance.now() >= until) break;
+      this.queue.shift();
+      const tl = this.build(q[0], q[1]);
+      this.tiles.set(tl.key, tl);
+    }
   }
 
   // ------------------------------------------------------------------------------------------ one tile
@@ -557,6 +612,7 @@ export class CityView {
     if (hasJ && [segZ(i, j), segZ(i, j - 1), segX(j, i), segX(j, i - 1)].filter(Boolean).length >= 3) this.lights(G, X0, Z0);
     // ---- meshes
     const group = new THREE.Group();
+    group.matrixAutoUpdate = false;
     const geos: THREE.BufferGeometry[] = [];
     let glow: THREE.MeshBasicMaterial | null = null;
     const add = (g: Geo, m: THREE.Material, cast: boolean, recv: boolean) => {
@@ -566,6 +622,7 @@ export class CityView {
       const mesh = new THREE.Mesh(geo, m);
       mesh.castShadow = this.shadows && cast;
       mesh.receiveShadow = this.shadows && recv;
+      mesh.matrixAutoUpdate = false;
       group.add(mesh);
     };
     add(G.road, this.roadMat, false, true);
@@ -868,47 +925,15 @@ export class CityView {
     }
   }
 
-  /** distant mountains (no fog: a hazy silhouette on the horizon) */
-  private makeFar(): THREE.Mesh {
-    const g = new Geo();
-    const rock = new THREE.Color();
-    for (let i = 0; i < 46; i++) {
-      const a = (i / 46) * Math.PI * 2 + ihash(i, 1, 1) * 0.1;
-      const h = 90 + Math.pow(ihash(i, 2, 1), 1.5) * 300;
-      const R = 1500 * (0.92 + 0.16 * ihash(i, 3, 1));
-      const w = h * (1.6 + ihash(i, 4, 1));
-      const x = Math.cos(a) * R;
-      const z = Math.sin(a) * R;
-      const n = 12;
-      const levels = [0, 0.35, 0.65, 0.88, 1];
-      const ids: number[][] = [];
-      levels.forEach((lv, li) => {
-        const row: number[] = [];
-        for (let k = 0; k <= n; k++) {
-          const b = ((k % n) / n) * Math.PI * 2;
-          const j = li === levels.length - 1 ? 0 : 0.75 + 0.5 * ihash(i, li, k % n);
-          const r = w * (1 - lv) ** 1.2 * j;
-          rock.set(0x9aa6b4).lerp(new THREE.Color(0xeef2f6), lv > 0.6 && h > 220 ? (lv - 0.6) * 2.2 : 0);
-          row.push(g.v(x + Math.cos(b) * r, h * lv, z + Math.sin(b) * r, rock));
-        }
-        ids.push(row);
-      });
-      for (let li = 0; li < levels.length - 1; li++) for (let k = 0; k < n; k++) g.quad(ids[li][k], ids[li + 1][k], ids[li + 1][k + 1], ids[li][k + 1]);
-    }
-    const m = new THREE.Mesh(g.build(), new THREE.MeshBasicMaterial({ vertexColors: true, fog: false, side: THREE.DoubleSide, transparent: true, opacity: 0.55 }));
-    m.frustumCulled = false;
-    m.renderOrder = -2;
-    return m;
-  }
-
   dispose(): void {
+    this.disposed = true;
     for (const t of this.tiles.values()) {
       for (const g of t.geos) g.dispose();
       t.glow?.dispose();
     }
     this.tiles.clear();
-    this.far.geometry.dispose();
-    (this.far.material as THREE.Material).dispose();
+    this.queue.length = 0;
+    this.warmGeo.dispose();
     this.floor.geometry.dispose();
     (this.floor.material as THREE.Material).dispose();
     for (const m of [this.roadMat, this.walkMat, this.groundMat, this.curbMat, this.paintMat, this.bldgMat, this.glassMat, this.leafMat, this.signMat, this.glowBase, this.flatsMat, this.shopMat]) {
@@ -916,6 +941,7 @@ export class CityView {
       mm.normalMap?.dispose();
       mm.roughnessMap?.dispose();
       mm.map?.dispose();
+      mm.emissiveMap?.dispose();
       m.dispose();
     }
   }

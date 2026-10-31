@@ -2,6 +2,7 @@
 // the caller builds procedural geometry or synthesised sound instead.
 
 import type * as THREE from "three";
+import { newGltfLoader } from "@/engine/quality/assetUrl";
 import manifestJson from "./assets.json";
 
 interface Entry {
@@ -39,8 +40,7 @@ export class AssetLib {
     if (!p) {
       p = (async () => {
         try {
-          const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
-          const gltf = await new GLTFLoader().loadAsync(url);
+          const gltf = await (await newGltfLoader()).loadAsync(url);
           return this.disposed ? null : gltf.scene;
         } catch {
           return null;

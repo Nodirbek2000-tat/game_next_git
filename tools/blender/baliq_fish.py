@@ -1,6 +1,6 @@
 """Harakat o'yinlari - Baliq ovi: the fish species, modelled in Blender, textured with generated skins.
 
-    blender -b --factory-startup --python tools/blender/baliq_fish.py -- --out public/models/baliq-ovi/fish [--only sazan,forel]
+    blender -b --factory-startup --python tools/blender/baliq_fish.py -- --out assets-src/models/baliq-ovi/fish [--only sazan,forel]
 
 Per species one GLB (one mesh, one material, nose towards +x, back towards +y, the body from x = -len/2 to +len/2,
 the tail fin behind it), the same frame as the procedural fish in games/baliq-ovi/fishGeometry.ts, so the game bends it
@@ -456,7 +456,7 @@ def build_fish(name, sp, tex_dir):
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="public/models/baliq-ovi/fish")
+    ap.add_argument("--out", default="assets-src/models/baliq-ovi/fish")
     ap.add_argument("--tex", default="tools/blender/out/fish")
     ap.add_argument("--only", default="")
     a = ap.parse_args(argv)

@@ -103,6 +103,14 @@ export class City {
     this.rnd = () => ihash(k++, 7, 13);
   }
 
+  /** Change how many cars / people live around the player: extras are dropped at once, missing ones appear in the next `step`. */
+  setCounts(nCars: number, nPeds: number): void {
+    this.nCars = nCars;
+    this.nPeds = nPeds;
+    if (this.cars.length > nCars) this.cars.length = nCars;
+    if (this.peds.length > nPeds) this.peds.length = nPeds;
+  }
+
   /** Fill / recycle around the player (px, pz). */
   private keep(px: number, pz: number): void {
     while (this.cars.length < this.nCars) {

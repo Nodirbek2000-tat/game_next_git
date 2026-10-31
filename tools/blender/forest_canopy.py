@@ -1,6 +1,6 @@
 """Harakat o'yinlari - Baliq ovi: a seamless "forest seen from above" texture, rendered in Blender from the game's firs.
 
-    blender -b --factory-startup --python tools/blender/forest_canopy.py -- --out public/textures/baliq-ovi/mtn/forest_canopy.jpg
+    blender -b --factory-startup --python tools/blender/forest_canopy.py -- --out assets-src/textures/baliq-ovi/mtn/forest_canopy.jpg
 
 ~500 firs (fir_0..2 with their real needle-card textures) scattered densely on a 48 m tile, wrapped at the edges so
 the texture tiles; orthographic camera straight down, a low morning sun. The game puts it on the forested slopes of
@@ -21,9 +21,9 @@ TILE = 48.0
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     ap = argparse.ArgumentParser()
-    ap.add_argument("--models", default="public/models/baliq-ovi/trees")
-    ap.add_argument("--tex", default="public/textures/baliq-ovi/trees")
-    ap.add_argument("--out", default="public/textures/baliq-ovi/mtn/forest_canopy.jpg")
+    ap.add_argument("--models", default="assets-src/models/baliq-ovi/trees")
+    ap.add_argument("--tex", default="assets-src/textures/baliq-ovi/trees")
+    ap.add_argument("--out", default="assets-src/textures/baliq-ovi/mtn/forest_canopy.jpg")
     ap.add_argument("--n", type=int, default=520)
     a = ap.parse_args(argv)
     bpy.ops.wm.read_factory_settings(use_empty=True)

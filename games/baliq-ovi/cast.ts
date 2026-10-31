@@ -126,6 +126,12 @@ export class RodWhip {
     this.age = 0;
   }
 
+  /** The hook set: the blank is flung into a deeper bend (towards the fish) and settles on the load of the fight. */
+  jerk(speed: number): void {
+    this.bendV += speed;
+    this.age = 0;
+  }
+
   /** `bendTarget` is where the bend settles (the bend of a rod that carries a float / a fighting fish). */
   step(dt: number, bendTarget = 0, damping = 0.16): void {
     this.age += dt;
