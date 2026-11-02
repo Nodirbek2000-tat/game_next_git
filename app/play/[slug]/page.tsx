@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Suspense } from "react";
 import { GAMES, getGame } from "@/lib/games";
 import PlayClient from "./PlayClient";
@@ -6,6 +6,9 @@ import PlayClient from "./PlayClient";
 export function generateStaticParams(): { slug: string }[] {
   return GAMES.map((g) => ({ slug: g.slug }));
 }
+
+// The play screen is a fixed full-screen stage: no pinch zoom, and the safe-area insets (notch) are available to the CSS.
+export const viewport: Viewport = { width: "device-width", initialScale: 1, maximumScale: 1, userScalable: false, viewportFit: "cover" };
 
 export async function generateMetadata({ params }: PageProps<"/play/[slug]">): Promise<Metadata> {
   const { slug } = await params;

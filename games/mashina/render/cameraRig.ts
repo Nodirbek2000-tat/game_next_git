@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { clamp } from "@/engine/math";
+import { clamp, portraitFov } from "@/engine/math";
 
 export type CamMode = "chase" | "cockpit";
 
@@ -93,8 +93,9 @@ export class CameraRig {
     cam.lookAt(this.look);
     const fov = this.mode === "chase" ? 60 + clamp(sp * 0.35, 0, 16) : 72 + clamp(sp * 0.2, 0, 8);
     this.fov += (fov - this.fov) * (1 - Math.exp(-dt * 4));
-    if (Math.abs(cam.fov - this.fov) > 0.15 || cam.near !== 0.2 || cam.far !== this.far) {
-      cam.fov = this.fov;
+    const want = portraitFov(this.fov, cam.aspect);
+    if (Math.abs(cam.fov - want) > 0.15 || cam.near !== 0.2 || cam.far !== this.far) {
+      cam.fov = want;
       cam.near = 0.2;
       cam.far = this.far;
       cam.updateProjectionMatrix();

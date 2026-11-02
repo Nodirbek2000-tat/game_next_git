@@ -27,6 +27,17 @@ export function segPointDist(p: { x: number; y: number }, a: { x: number; y: num
   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
 }
 
+/**
+ * Vertical field of view for a screen of the given aspect (width / height). A landscape screen keeps `base` exactly; a portrait
+ * one (phone held upright) gets a wider vertical field so the horizontal field stays about 62 degrees (capped at 96 vertical):
+ * the road, the water, the opponent stay in the picture.
+ */
+export function portraitFov(base: number, aspect: number): number {
+  if (!(aspect > 0) || aspect >= 1) return base;
+  const need = (2 * Math.atan(Math.tan((62 * Math.PI) / 360) / aspect) * 180) / Math.PI;
+  return Math.max(base, Math.min(96, need));
+}
+
 export function pointInPoly(p: { x: number; y: number }, poly: readonly { x: number; y: number }[]): boolean {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {

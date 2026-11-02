@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { drawText } from "@/engine/fx/fx2d";
-import { clamp, lerp } from "@/engine/math";
+import { clamp, lerp, portraitFov } from "@/engine/math";
 import { texUrl } from "@/engine/quality/assetUrl";
 import { readBest, writeBest } from "@/engine/settings/store";
 import type { EngineApi, QualityLevel } from "@/engine/types";
@@ -9,6 +9,7 @@ import { InputMapper, newControls, type PadState } from "@/games/mashina/logic/i
 import { disposeCarParts } from "@/games/mashina/render/carModel";
 import { SkidMarks, Smoke } from "@/games/mashina/render/fx3d";
 import { DwellController } from "@/engine/ui/dwell";
+import { bottomLift } from "@/engine/ui/safe";
 import { type Box, DOWNTOWN, type Post, HW, LANE, PITCH, blockKind, forgetFar, groundYWorld, plan, unwarp, unwarpDir, warpDir, warpX, warpZ } from "./city";
 import { CityView } from "./cityView";
 import { Car, type Hit, gearLabel } from "./carSim";
@@ -773,7 +774,7 @@ export class PoygaGame {
     cam.lookAt(this.camLook);
     this.roll = lerp(this.roll, driving && this.cam === "chase" ? clamp(car.aLat * -0.004, -0.04, 0.04) : 0, 1 - Math.exp(-4 * dt));
     cam.rotateZ(this.roll);
-    const fov = lerp(42, (this.cam === "cockpit" ? 68 : 60) + 10 * sp, bl);
+    const fov = portraitFov(lerp(42, (this.cam === "cockpit" ? 68 : 60) + 10 * sp, bl), cam.aspect);
     if (Math.abs(cam.fov - fov) > 0.02) {
       cam.fov = lerp(cam.fov, fov, 1 - Math.exp(-3 * dt));
       cam.updateProjectionMatrix();
@@ -787,7 +788,8 @@ export class PoygaGame {
   draw(c: CanvasRenderingContext2D): void {
     const e = this.engine;
     const W = e.stage.w;
-    const H = e.stage.h;
+    // portrait phone: keep the HUD above the engine's bottom row (back / pause / sound)
+    const H = e.stage.h - bottomLift(e.stage.w, e.stage.h);
     const u = Math.min(W, H) / 720;
     const car = this.car;
     if (this.phase === "garage") {

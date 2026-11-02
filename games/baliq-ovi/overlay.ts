@@ -5,7 +5,9 @@ import type { EngineApi } from "@/engine";
 import { drawRingProgress, drawText } from "@/engine/fx/fx2d";
 import type { Angler } from "./angler";
 import type { BaliqRig } from "./game";
-import { collectionRects, lobbyRects, optionRects } from "./layout";
+import { bottomLift } from "@/engine/ui/safe";
+import { belowPip, collectionRects, lobbyRects, optionRects } from "./layout";
+import { portraitFov } from "@/engine/math";
 import { FOV } from "./view";
 import { VOICE_PLAY_AVAILABLE } from "./playMode";
 import { clamp, TUNING } from "./rules";
@@ -45,6 +47,15 @@ function wrap(c: CanvasRenderingContext2D, text: string, maxW: number): string[]
   return out;
 }
 
+/** a text that wraps to `maxW`; the LAST line sits at `yBottom`, the others above it (phones held upright) */
+function drawWrapped(c: CanvasRenderingContext2D, text: string, x: number, yBottom: number, maxW: number, size: number, col: string): void {
+  c.save();
+  c.font = `800 ${size}px system-ui, sans-serif`;
+  const lines = wrap(c, text, maxW);
+  c.restore();
+  lines.forEach((l, i) => drawText(c, l, x, yBottom - (lines.length - 1 - i) * (size + 5), size, col));
+}
+
 /** an arrow on the screen edge that points to something outside the view (the player turns the head to follow it) */
 function drawEdgeArrow(rig: BaliqRig, c: CanvasRenderingContext2D, bearing: number, label: string, col: string, now: number): void {
   const { w, h } = rig.ui;
@@ -71,7 +82,7 @@ function drawEdgeArrow(rig: BaliqRig, c: CanvasRenderingContext2D, bearing: numb
 
 function halfFov(rig: BaliqRig): number {
   const aspect = rig.ui.w / Math.max(1, rig.ui.h);
-  return Math.atan(Math.tan((FOV * Math.PI) / 360) * aspect);
+  return Math.atan(Math.tan((portraitFov(FOV, aspect) * Math.PI) / 360) * aspect);
 }
 
 function sideX(rig: BaliqRig, a: Angler): number {
@@ -185,13 +196,18 @@ function drawAngler(rig: BaliqRig, c: CanvasRenderingContext2D, a: Angler, now: 
 
   // hint
   const tip = hint(a, rig);
-  if (tip) drawText(c, tip, cx, h - 96, st === "bite" ? 28 : two ? 17 : 21, st === "bite" ? "#ff5a6a" : "#fff");
+  if (tip) {
+    // upright phone: wrapped, above the engine's bottom row
+    if (h > w) drawWrapped(c, tip, cx, h - 96 - bottomLift(w, h) + 40, w - 24, st === "bite" ? 22 : 16, st === "bite" ? "#ff5a6a" : "#fff");
+    else drawText(c, tip, cx, h - 96, st === "bite" ? 28 : two ? 17 : 21, st === "bite" ? "#ff5a6a" : "#fff");
+  }
 
   // message
   if (a.msgT > 0 && a.msg) {
     c.save();
     c.globalAlpha = Math.min(1, a.msgT * 2);
-    drawText(c, a.msg, cx, h * 0.2, two ? 24 : 30, "#ffe66d");
+    if (h > w) drawWrapped(c, a.msg, cx, h * 0.3, w - 24, 22, "#ffe66d");
+    else drawText(c, a.msg, cx, h * 0.2, two ? 24 : 30, "#ffe66d");
     c.restore();
   }
 
@@ -237,7 +253,7 @@ function drawAngler(rig: BaliqRig, c: CanvasRenderingContext2D, a: Angler, now: 
     c.stroke();
     c.restore();
     drawText(c, "G‘altak", rx, ry + rr + 22, 13, "#fff");
-    if (f.run) drawText(c, f.pullDir === 0 ? "Baliq tortyapti!" : f.pullDir < 0 ? "◀ Baliq chapga tortyapti!" : "Baliq o‘ngga tortyapti! ▶", cx, h * 0.3, two ? 20 : 26, "#ff8a80");
+    if (f.run) drawText(c, f.pullDir === 0 ? "Baliq tortyapti!" : f.pullDir < 0 ? "◀ Baliq chapga tortyapti!" : "Baliq o‘ngga tortyapti! ▶", cx, h * 0.3, h > w ? 20 : two ? 20 : 26, "#ff8a80");
     if (f.run || !rig.engine.kids) drawPullCue(c, a, f, cx, h * 0.345, two, rig.engine.kids);
     if (f.jumpT > 0) drawText(c, "Sakradi!", cx, h * 0.41, 22, "#9fe8ff");
   }
@@ -245,7 +261,7 @@ function drawAngler(rig: BaliqRig, c: CanvasRenderingContext2D, a: Angler, now: 
   // caught card
   if (st === "show" && a.card) {
     const k = Math.min(1, a.stT / 0.4);
-    const cw = two ? 330 : 400;
+    const cw = Math.min(two ? 330 : 400, w - 20);
     const ch = 128;
     const x = cx - cw / 2;
     const y = h * 0.66;
@@ -289,6 +305,25 @@ function drawAngler(rig: BaliqRig, c: CanvasRenderingContext2D, a: Angler, now: 
 /** The two play modes: silent (selected, the only one that works now) and voice ("Tez orada", not selectable). */
 function drawModeCards(rig: BaliqRig, c: CanvasRenderingContext2D): void {
   const [silent, voice] = optionRects(rig.ui.w, rig.ui.h).modes;
+  if (rig.ui.h > rig.ui.w) {
+    // portrait: compact cards, the text wrapped to the card
+    panel(c, silent.x, silent.y, silent.w, silent.h, 14, "rgba(30,110,85,.55)", "#34d399");
+    drawText(c, "✓ Ovozsiz o‘ynash", silent.x + silent.w / 2, silent.y + 20, 17, "#b8ffd8");
+    panel(c, voice.x, voice.y, voice.w, voice.h, 14, "rgba(14,40,58,.6)", "rgba(255,255,255,.18)");
+    c.save();
+    c.globalAlpha = 0.65;
+    drawText(c, "Ovoz bilan o‘ynash · tez orada", voice.x + voice.w / 2, voice.y + 20, 17, "#fff");
+    c.restore();
+    c.save();
+    c.font = "600 12px system-ui, sans-serif";
+    c.fillStyle = "#dfeff6";
+    c.textAlign = "center";
+    wrap(c, "Qo‘l harakatlari bilan o‘ynaysiz: siltang, torting, aylantiring. Mikrofon kerak emas.", silent.w - 28).forEach((l, i) => c.fillText(l, silent.x + silent.w / 2, silent.y + 44 + i * 16));
+    c.globalAlpha = 0.65;
+    wrap(c, "Ovoz buyruqlari bilan o‘ynash keyinroq qo‘shiladi.", voice.w - 28).forEach((l, i) => c.fillText(l, voice.x + voice.w / 2, voice.y + 44 + i * 16));
+    c.restore();
+    return;
+  }
   panel(c, silent.x, silent.y, silent.w, silent.h, 18, "rgba(30,110,85,.55)", "#34d399");
   drawText(c, "✓ Ovozsiz o‘ynash", silent.x + silent.w / 2, silent.y + 28, 22, "#b8ffd8");
   c.save();
@@ -316,6 +351,45 @@ function drawModeCards(rig: BaliqRig, c: CanvasRenderingContext2D): void {
 function drawOptions(rig: BaliqRig, c: CanvasRenderingContext2D, now: number): void {
   const { w, h } = rig.ui;
   const r = optionRects(w, h);
+  if (h > w && !VOICE_PLAY_AVAILABLE) {
+    // portrait phone: everything wrapped to the panel, cards stacked, the start button inside the panel
+    c.save();
+    c.fillStyle = "rgba(4,16,26,.62)";
+    c.fillRect(0, 0, w, h);
+    c.restore();
+    panel(c, r.panel.x, r.panel.y, r.panel.w, r.panel.h, 22, "rgba(10,30,45,.92)", "rgba(255,255,255,.25)");
+    const cx = w / 2;
+    drawText(c, "Baliq ovi", cx, r.panel.y + 30, 30, "#fff");
+    c.save();
+    c.font = "700 13px system-ui, sans-serif";
+    c.fillStyle = "#9fe8ff";
+    c.textAlign = "center";
+    let y = r.panel.y + 58;
+    for (const l of wrap(c, "Siz ko‘zingiz bilan ko‘ryapsiz: boshingizni burib atrofga qarang", r.panel.w - 32)) {
+      c.fillText(l, cx, y);
+      y += 17;
+    }
+    c.font = "600 12px system-ui, sans-serif";
+    c.fillStyle = "#dfeff6";
+    y += 6;
+    const lines = ["O‘ng qo‘lni ko‘tarib, kuchli oldinga siltang — qarmoq uchadi (kuch = masofa)", "Poplavok cho‘ksa — qo‘lni tepaga torting · baliq yonga tortsa — qo‘lni qarshi tomonga suring", "Chap qo‘l bilan havoda doira chizing — g‘altak aylanadi"];
+    for (const t of lines) {
+      for (const l of wrap(c, t, r.panel.w - 32)) {
+        c.fillText(l, cx, y);
+        y += 15;
+      }
+      y += 4;
+    }
+    c.restore();
+    drawModeCards(rig, c);
+    const s = r.start;
+    const sh = rig.ui.hover === 1;
+    const pulse = 0.85 + 0.15 * Math.sin(now / 200);
+    panel(c, s.x, s.y, s.w, s.h, 16, sh ? "rgba(40,150,110,.95)" : `rgba(30,120,90,${pulse})`, "#34d399");
+    drawText(c, "Boshlash", s.x + s.w / 2, s.y + s.h / 2, 22, "#fff");
+    if (sh) drawRingProgress(c, s.x + s.w - 24, s.y + s.h / 2, 14, rig.ui.prog, "#34d399");
+    return;
+  }
   c.save();
   c.fillStyle = "rgba(4,16,26,.62)";
   c.fillRect(0, 0, w, h);
@@ -380,8 +454,10 @@ function drawLobby(rig: BaliqRig, c: CanvasRenderingContext2D): void {
   c.fillStyle = "rgba(4,16,26,.55)";
   c.fillRect(0, 0, w, h);
   c.restore();
-  drawText(c, "O‘yin rejimini tanlang", w / 2, h * 0.12, 38, "#fff");
-  drawText(c, "Qo‘lingizni kartochka ustida ushlab turing yoki 1 / 2 tugmasini bosing", w / 2, h * 0.19, 17, "#9fe8ff");
+  const tall = h > w;
+  drawText(c, "O‘yin rejimini tanlang", w / 2, tall ? belowPip(w) + 6 : h * 0.12, tall ? 26 : 38, "#fff");
+  if (tall) drawWrapped(c, "Qo‘lingizni kartochka ustida ushlab turing", w / 2, belowPip(w) + 28, w - 24, 14, "#9fe8ff");
+  else drawText(c, "Qo‘lingizni kartochka ustida ushlab turing yoki 1 / 2 tugmasini bosing", w / 2, h * 0.19, 17, "#9fe8ff");
   const r = lobbyRects(w, h);
   const items = [
     { t: "Birgalikda", sub: "Umumiy savat va umumiy maqsad", d: `Birgalikda ${rig.goalKg} kg baliq tuting. Do‘stingizning baliqqa sachok bilan yordam bering — Do‘stlik bonusi!`, key: "1" },
@@ -390,14 +466,14 @@ function drawLobby(rig: BaliqRig, c: CanvasRenderingContext2D): void {
   items.forEach((it, i) => {
     const hov = rig.ui.hover === i;
     panel(c, r[i].x, r[i].y, r[i].w, r[i].h, 22, hov ? "rgba(40,120,170,.85)" : "rgba(10,30,45,.82)", hov ? "#22d3ee" : "rgba(255,255,255,.25)");
-    drawText(c, it.t, r[i].x + r[i].w / 2, r[i].y + 52, 36, "#fff");
-    drawText(c, it.sub, r[i].x + r[i].w / 2, r[i].y + 92, 18, "#ffe66d");
+    drawText(c, it.t, r[i].x + r[i].w / 2, r[i].y + (tall ? 36 : 52), tall ? 28 : 36, "#fff");
+    drawText(c, it.sub, r[i].x + r[i].w / 2, r[i].y + (tall ? 68 : 92), tall ? 16 : 18, "#ffe66d");
     c.save();
     c.font = "700 17px system-ui, sans-serif";
     c.fillStyle = "#dfeff6";
     c.textAlign = "center";
     const lines = wrap(c, it.d, r[i].w - 50);
-    lines.forEach((l, k) => c.fillText(l, r[i].x + r[i].w / 2, r[i].y + 140 + k * 24));
+    lines.forEach((l, k) => c.fillText(l, r[i].x + r[i].w / 2, r[i].y + (tall ? 100 : 140) + k * (tall ? 21 : 24)));
     c.restore();
     drawText(c, `[${it.key}]`, r[i].x + r[i].w - 30, r[i].y + r[i].h - 22, 16, "rgba(255,255,255,.5)");
     if (hov) drawRingProgress(c, r[i].x + r[i].w / 2, r[i].y + r[i].h - 34, 22, rig.ui.prog, "#22d3ee");
@@ -412,8 +488,9 @@ function drawCollection(rig: BaliqRig, c: CanvasRenderingContext2D, now: number)
   c.fillRect(0, 0, w, h);
   c.restore();
   const r = collectionRects(w, h);
-  drawText(c, "Baliq ensiklopediyasi", w / 2, h * 0.07, 34, "#fff");
-  drawText(c, `Kolleksiya: ${SPECIES.filter((s) => rig.collection[s.id]).length} / ${SPECIES.length} · Yangi turlar: ${rig.newSpecies}`, w / 2, h * 0.135, 16, "#9fe8ff");
+  const tall = h > w;
+  drawText(c, "Baliq ensiklopediyasi", w / 2, tall ? belowPip(w) - 34 : h * 0.07, tall ? 22 : 34, "#fff");
+  drawText(c, `Kolleksiya: ${SPECIES.filter((s) => rig.collection[s.id]).length} / ${SPECIES.length} · Yangi turlar: ${rig.newSpecies}`, w / 2, tall ? belowPip(w) - 10 : h * 0.135, tall ? 13 : 16, "#9fe8ff");
   SPECIES.forEach((s, i) => {
     const e = rig.collection[s.id];
     const sel = rig.ui.sel === i;
@@ -427,7 +504,7 @@ function drawCollection(rig: BaliqRig, c: CanvasRenderingContext2D, now: number)
   const sp = SPECIES[rig.ui.sel];
   const e = rig.collection[sp.id];
   panel(c, r.info.x, r.info.y, r.info.w, r.info.h, 18, "rgba(12,32,48,.9)", "rgba(255,255,255,.2)");
-  drawFishIcon(c, sp, r.info.x + r.info.w / 2, r.info.y + r.info.h * 0.2, Math.min(88, r.info.w * 0.28), !e);
+  drawFishIcon(c, sp, r.info.x + r.info.w / 2, r.info.y + r.info.h * 0.2, tall ? 36 : Math.min(88, r.info.w * 0.28), !e);
   drawText(c, e ? sp.name : "Hali tutilmagan", r.info.x + r.info.w / 2, r.info.y + r.info.h * 0.37, 22, "#fff");
   drawText(c, e ? `Rekord: ${e.record.toFixed(2)} kg · Tutilgan: ${e.count} ta` : `Og‘irligi: ${sp.w[0]}–${sp.w[1]} kg`, r.info.x + r.info.w / 2, r.info.y + r.info.h * 0.5, 14, "#ffe66d");
   c.save();
@@ -435,7 +512,7 @@ function drawCollection(rig: BaliqRig, c: CanvasRenderingContext2D, now: number)
   c.fillStyle = "#dfeff6";
   c.textAlign = "center";
   const text = e || rig.engine.kids ? (rig.engine.kids ? sp.kids : sp.info) : "Bu turni tutib, ensiklopediyaga qo‘shing!";
-  wrap(c, text, r.info.w - 36).forEach((l, i) => c.fillText(l, r.info.x + r.info.w / 2, r.info.y + r.info.h * 0.62 + i * 20));
+  wrap(c, text, r.info.w - 36).forEach((l, i) => c.fillText(l, r.info.x + r.info.w / 2, r.info.y + r.info.h * (tall ? 0.66 : 0.62) + i * (tall ? 17 : 20)));
   c.restore();
   // continue button
   const b = r.button;

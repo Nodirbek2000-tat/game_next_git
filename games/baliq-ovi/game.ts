@@ -25,6 +25,7 @@ import { Scenery } from "./scenery";
 import { buildWorld, flattenModel, updateWorld, type WorldObjects } from "./world";
 import { collectionRects, lobbyRects, optionRects } from "./layout";
 import { drawOverlay } from "./overlay";
+import { portraitFov } from "@/engine/math";
 import { EYE, FOV, headTurn, lookPitch, ViewController, emptyHead } from "./view";
 import { VoiceControl, type VoiceCtx, type VoiceEventKind } from "./voice";
 import { loadVoicePref, saveVoicePref, VoiceInput } from "./voiceInput";
@@ -619,6 +620,12 @@ export class BaliqRig implements Host {
     const playing = e.state === "play";
     this.ui.w = e.stage.w;
     this.ui.h = e.stage.h;
+    // portrait phone: a wider vertical field keeps the lake in the picture (landscape: FOV as before)
+    const fov = portraitFov(FOV, e.stage.w / Math.max(1, e.stage.h));
+    if (Math.abs(this.cam.fov - fov) > 0.05) {
+      this.cam.fov = fov;
+      this.cam.updateProjectionMatrix();
+    }
     if (playing) this.logic(dt);
     this.visuals(dt);
   }

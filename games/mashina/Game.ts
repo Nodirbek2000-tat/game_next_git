@@ -14,6 +14,7 @@ import { lightColor, type LightColor } from "./logic/signals";
 import { PhysWorld } from "./physics/world";
 import { RaycastCar } from "./physics/vehicle";
 import { rideHeight, disposeCarParts } from "./render/carModel";
+import { bottomLift } from "@/engine/ui/safe";
 import { CameraRig } from "./render/cameraRig";
 import { Beacon, HeadGlow, Rain, SkidMarks, Smoke } from "./render/fx3d";
 import { drawHud, newHudModel, type HudModel } from "./render/hud";
@@ -1167,7 +1168,7 @@ export class MashinaGame {
     this.hudView.w = e.stage.w;
     this.hudView.h = e.stage.h;
     if (!this.car) return;
-    drawHud(c, e.stage.w, e.stage.h, this.hud, this.L, now);
+    drawHud(c, e.stage.w, e.stage.h - bottomLift(e.stage.w, e.stage.h), this.hud, this.L, now);
   }
 
   // ------------------------------------------------------------------------------------------ test hook

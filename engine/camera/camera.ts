@@ -61,6 +61,16 @@ export const CAMERA_IDEAL_CROWD_MOBILE = {
   frameRate: { ideal: 30, max: 30 },
 } as const;
 
+/** A phone held upright: the browser then delivers (and we should ask for) a portrait picture. */
+function isPortraitScreen(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(orientation: portrait)").matches;
+}
+
+/** The same ideal size with width and height swapped (portrait pictures); the rest is unchanged. */
+export function swapIdealSize<T extends { width: unknown; height: unknown }>(ideal: T): T {
+  return { ...ideal, width: ideal.height, height: ideal.width };
+}
+
 function isPhone(): boolean {
   return typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent);
 }
@@ -75,12 +85,14 @@ export async function openCamera(savedDeviceId?: string, opts?: { crowd?: boolea
   }
   const phone = isPhone();
   const crowd = opts?.crowd === true;
-  const ideal = crowd ? (phone ? CAMERA_IDEAL_CROWD_MOBILE : CAMERA_IDEAL_CROWD) : phone ? CAMERA_IDEAL_MOBILE : CAMERA_IDEAL;
+  const upright = phone && isPortraitScreen();
+  const sized = <T extends { width: unknown; height: unknown }>(i: T): T => (upright ? swapIdealSize(i) : i);
+  const ideal = sized(crowd ? (phone ? CAMERA_IDEAL_CROWD_MOBILE : CAMERA_IDEAL_CROWD) : phone ? CAMERA_IDEAL_MOBILE : CAMERA_IDEAL);
   const tries: (MediaTrackConstraints | boolean)[] = [];
   if (savedDeviceId) tries.push({ deviceId: { exact: savedDeviceId }, ...ideal });
   tries.push({ ...ideal, facingMode: "user" });
   // crowd: a camera that refuses the big picture still gets the normal small one before "anything"
-  if (crowd) tries.push({ ...(phone ? CAMERA_IDEAL_MOBILE : CAMERA_IDEAL), facingMode: "user" });
+  if (crowd) tries.push({ ...sized(phone ? CAMERA_IDEAL_MOBILE : CAMERA_IDEAL), facingMode: "user" });
   tries.push(true);
   let last: unknown;
   for (const v of tries) {

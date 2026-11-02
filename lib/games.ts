@@ -117,9 +117,14 @@ export const ALL_GAMES: GameInfo[] = [
     icon: "🥊",
     short: "Lapalarga uring, raqib zarbasidan qoching.",
     description:
-      "Qizil lapaga chap, ko‘k lapaga o‘ng qo‘l bilan uring. Raqib zarbasidan bosh bilan qoching yoki blok qiling.",
-    tip: "Mushtlarni tayyorlang",
-    rules: ["Qizil lapa — chap qo‘l, ko‘k lapa — o‘ng qo‘l.", "Raqib zarbasidan boshni egib qoching.", "Ikki qo‘lni yuzga qo‘ysangiz — blok."],
+      "3 raundlik jang: qizil lapaga chap, ko‘k lapaga o‘ng qo‘l bilan tez va keskin uring. Raqib zarbasidan bosh bilan qoching yoki ikki qo‘l bilan blok qiling.",
+    tip: "Mushtlarni tayyorlang — yelka va qo‘llaringiz ko‘rinsin",
+    rules: [
+      "Qizil lapa — chap qo‘l, ko‘k lapa — o‘ng qo‘l. Tez va keskin uring: sekin tegish hisoblanmaydi.",
+      "Raqib zarba oldidan qo‘lini tortadi — boshni chetga oling yoki egiling.",
+      "Ikki qo‘lni yuzga qo‘ysangiz — blok: zarba to‘rtdan biriga kamayadi.",
+      "3 raund, orasida dam olish. Raqibni nokaut qilsangiz — bonus.",
+    ],
     bodyParts: ["qollar", "butun-tana"],
     difficulty: "orta",
     kidsFriendly: true,
@@ -278,7 +283,7 @@ export const ALL_GAMES: GameInfo[] = [
 ];
 
 /** Games released on the site right now; the rest come back in a later stage. */
-export const ACTIVE_SLUGS = ["meva-ninja", "baliq-ovi", "mashina", "poyga", "pufakchalar", "hayvonlar", "baliqcha", "devor-bolalar", "sanaymiz", "bogcha-demo"] as const;
+export const ACTIVE_SLUGS = ["meva-ninja", "baliq-ovi", "mashina", "poyga", "boks", "pufakchalar", "hayvonlar", "baliqcha", "devor-bolalar", "sanaymiz", "bogcha-demo"] as const;
 
 export const GAMES: GameInfo[] = ALL_GAMES.filter((g) => (ACTIVE_SLUGS as readonly string[]).includes(g.slug));
 

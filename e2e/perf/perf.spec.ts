@@ -35,6 +35,7 @@ const GAMES: GameSpec[] = [
   { slug: "baliq-ovi", kids: false, query: "duration=120" },
   { slug: "mashina", kids: false, query: "mode=erkin&time=0.45&duration=120" },
   { slug: "poyga", kids: false, query: "duration=120&start=1" },
+  { slug: "boks", kids: false, query: "duration=120" },
   { slug: "pufakchalar", kids: true, query: "duration=120" },
   { slug: "hayvonlar", kids: true, query: "duration=120" },
   { slug: "baliqcha", kids: true, query: "duration=120" },

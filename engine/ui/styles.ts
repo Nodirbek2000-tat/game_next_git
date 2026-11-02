@@ -119,4 +119,37 @@ export const PLAY_CSS = `
 .hk-kidrow>div{padding:10px 16px;border-radius:20px;background:rgba(255,255,255,.08);border:3px solid var(--kc,#fff);min-width:96px}
 .hk-kidrow b{display:block;font-size:44px;line-height:1.1}
 .hk-kidrow span{display:block;font-size:22px;letter-spacing:2px}
+/* phones (finger, narrow): one compact HUD row inside the safe area, bigger tap targets, small camera picture that stays clear of the HUD */
+@media (pointer:coarse) and (max-width:700px){
+  .hk-hud{top:calc(env(safe-area-inset-top) + 8px);left:max(10px,env(safe-area-inset-left));right:max(10px,env(safe-area-inset-right));gap:8px;flex-wrap:nowrap}
+  .hk-hcard{min-width:0;padding:6px 10px;border-radius:12px}
+  .hk-hud .hk-hcard:first-child{flex:1 1 0;min-width:0}
+  .hk-hcard b{font-size:20px}
+  .hk-htitle{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
+  .hk-hbar{width:100%}
+  .hk-hmid{margin:0}
+  .hk-pl{top:calc(env(safe-area-inset-top) + 68px);min-width:0;max-width:40vw}
+  .hk-btns{right:max(10px,env(safe-area-inset-right));bottom:calc(env(safe-area-inset-bottom) + 12px)}
+  .hk-btns button{width:48px;height:48px}
+  .hk-back{left:max(10px,env(safe-area-inset-left));bottom:calc(env(safe-area-inset-bottom) + 12px);height:48px}
+  .hk-sound{top:calc(env(safe-area-inset-top) + 68px);max-width:92vw;text-align:center}
+  .hk-toast{bottom:calc(env(safe-area-inset-bottom) + 72px);max-width:92vw;text-align:center}
+  .hk-debug{bottom:calc(env(safe-area-inset-bottom) + 72px);max-width:92vw}
+  .hk-center{white-space:normal;width:min(92vw,520px)}
+  .hk-ov{padding:calc(env(safe-area-inset-top) + 14px) max(14px,env(safe-area-inset-right)) calc(env(safe-area-inset-bottom) + 14px) max(14px,env(safe-area-inset-left))}
+  .hk-card{padding:24px 18px}
+  .hk-big .hk-btn{min-width:min(220px,100%)}
+  .hk-kids .hk-btn{min-width:min(320px,100%);padding:20px 24px;font-size:26px}
+  .hk-kids h1{font-size:clamp(34px,10vw,56px)}
+  .hk-lines{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .hk-cam[data-pip="1"]{top:calc(env(safe-area-inset-top) + 68px);right:max(10px,env(safe-area-inset-right));width:min(160px,22vw);border-radius:10px}
+}
+/* an upright phone: the camera picture is portrait too (same shape as the stage, so the skeleton drawn over it lines up) */
+@media (pointer:coarse) and (orientation:portrait) and (max-width:700px){
+  .hk-cam[data-pip="1"]{aspect-ratio:9/19.5;width:18vw}
+  .hk-pl.p1{right:calc(18vw + 20px)}
+}
+@media (pointer:coarse) and (max-height:480px){
+  .hk-card{padding:14px 18px}.hk-icon{width:56px;font-size:34px;margin-bottom:6px;border-radius:18px}.hk-root h1{font-size:26px;margin:4px 0 8px}
+}
 `;
