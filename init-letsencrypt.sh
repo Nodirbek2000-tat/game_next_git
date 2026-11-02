@@ -5,11 +5,11 @@
 #   LETSENCRYPT_EMAIL=siz@example.com ./init-letsencrypt.sh
 #   LETSENCRYPT_STAGING=1 LETSENCRYPT_EMAIL=... ./init-letsencrypt.sh   # avval sinov (limitga tushmaydi)
 #
-# Oldindan: DNS A yozuvlari (uzbekyoshlari.uz va www) shu serverga qarashi, `docker network create web`.
+# Oldindan: DNS A yozuvlari (moveandplay.uz va www) shu serverga qarashi, `docker network create web`.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-DOMAIN="uzbekyoshlari.uz"
+DOMAIN="moveandplay.uz"
 DOMAINS=("$DOMAIN" "www.$DOMAIN")
 EMAIL="${LETSENCRYPT_EMAIL:?LETSENCRYPT_EMAIL ni bering (masalan: LETSENCRYPT_EMAIL=siz@example.com)}"
 STAGING_ARG=()

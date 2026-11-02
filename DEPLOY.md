@@ -1,4 +1,4 @@
-# Deploy — uzbekyoshlari.uz
+# Deploy — moveandplay.uz
 
 Ikkita alohida repo, ikkita mustaqil Docker stack. Har biri alohida quriladi va alohida yangilanadi.
 
@@ -8,7 +8,7 @@ Ikkita alohida repo, ikkita mustaqil Docker stack. Har biri alohida quriladi va 
 | `game_git` (backend) | `/opt/harakat/game_git` | Django + PostgreSQL + Redis | yo'q (db/redis `internal` tarmoqda) |
 
 Ulanish: tashqi docker tarmog'i `web`. nginx `harakat-next:3000` va `harakat-django:8000` ga shu tarmoq orqali boradi.
-Yo'nalish: `/api/`, `/admin/`, `/static/` -> Django; qolgani -> Next. `www` -> `uzbekyoshlari.uz` ga yo'naltiriladi.
+Yo'nalish: `/api/`, `/admin/`, `/static/` -> Django; qolgani -> Next. `www` -> `moveandplay.uz` ga yo'naltiriladi.
 
 > Hamma buyruq serverda, ikkala repo `/opt/harakat/` ichida turibdi deb yozilgan.
 
@@ -61,10 +61,10 @@ Domen registratorida ikkita A yozuv (server IP'si):
 
 | Host | Tur | Qiymat |
 |---|---|---|
-| `uzbekyoshlari.uz` (`@`) | A | SERVER_IP |
+| `moveandplay.uz` (`@`) | A | SERVER_IP |
 | `www` | A | SERVER_IP |
 
-`dig +short uzbekyoshlari.uz` va `dig +short www.uzbekyoshlari.uz` server IP'sini qaytarmaguncha sertifikat olmang.
+`dig +short moveandplay.uz` va `dig +short www.moveandplay.uz` server IP'sini qaytarmaguncha sertifikat olmang.
 
 ## 3. Kodni serverga olish (bir marta)
 
@@ -112,10 +112,10 @@ Skript: vaqtinchalik sertifikat -> nginx -> haqiqiy sertifikat (webroot) -> ngin
 
 Tekshirish:
 ```bash
-curl -sI http://uzbekyoshlari.uz | head -3           # 301 -> https
-curl -sI https://uzbekyoshlari.uz | head -15         # 200, Strict-Transport-Security, Permissions-Policy
-curl -sI https://www.uzbekyoshlari.uz | head -3      # 301 -> https://uzbekyoshlari.uz
-curl -sI https://uzbekyoshlari.uz/mediapipe/vision_wasm_internal.wasm | grep -i -E 'content-type|cache-control'
+curl -sI http://moveandplay.uz | head -3           # 301 -> https
+curl -sI https://moveandplay.uz | head -15         # 200, Strict-Transport-Security, Permissions-Policy
+curl -sI https://www.moveandplay.uz | head -3      # 301 -> https://moveandplay.uz
+curl -sI https://moveandplay.uz/mediapipe/vision_wasm_internal.wasm | grep -i -E 'content-type|cache-control'
 ```
 Brauzerda kamera ishlashini ham tekshiring (faqat HTTPS'da ishlaydi).
 

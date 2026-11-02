@@ -1,4 +1,4 @@
-# FRONTEND: Next.js + nginx + certbot (uzbekyoshlari.uz, avtomatik SSL).
+# FRONTEND: Next.js + nginx + certbot (moveandplay.uz, avtomatik SSL).
 # Backend repo (game_git) dan mustaqil deploy qilinadi; ikkalasi tashqi `web` tarmog'i orqali bog'lanadi:
 #   docker network create web     (serverda bir marta)
 # Internetga faqat nginx 80/443 ochiq. Faqat Next'ni yangilash: docker compose up -d --build next
