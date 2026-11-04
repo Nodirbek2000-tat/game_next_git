@@ -1,4 +1,5 @@
 import type { GameModule } from "../types";
+import { LAB_LOADERS } from "./lab";
 
 /**
  * Game modules, one lazy chunk each. The home page never imports this file, so no game code is loaded
@@ -18,6 +19,8 @@ export const GAME_LOADERS: Record<string, () => Promise<{ default: GameModule }>
   "pufakchalar": () => import("@/games/pufakchalar"),
   "sanaymiz": () => import("@/games/sanaymiz"),
   "devor-bolalar": () => import("@/games/devor-bolalar"),
+  // sinov (lab) o'yinlari: engine/game/lab/*
+  ...LAB_LOADERS,
 };
 
 export const isImplemented = (slug: string): boolean => slug in GAME_LOADERS;

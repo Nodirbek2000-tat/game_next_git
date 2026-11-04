@@ -3,7 +3,8 @@ import type { EngineApi } from "@/engine";
 import { buildPeople, computeFit } from "@/engine/tracking/people";
 import { KidTracker } from "@/engine/tracking/kids";
 import { makeSkeleton } from "@/engine/testing/skeleton";
-import { drawKids, lostAlpha, minScaleFor } from "./avatar";
+import { avatarSpriteCount, clearAvatarSprites, drawKids, lostAlpha, minScaleFor, setSpriteFactory } from "./avatar";
+import { KID_ANIMALS } from "@/engine/tracking/kids";
 import { clearEmojiSprites, drawEmoji } from "./sprites";
 import { startKidsGame } from "./kit";
 import { MelodyScheduler, MusicPlayer, NOTE_LEAD, SONGS, type KidsGraph, type SongId } from "./music";
@@ -236,8 +237,63 @@ describe("avatars", () => {
     const ctx = ctxMock();
     drawKids(ctx, tr.slots, 0);
     const n = (ctx as unknown as { n: number }).n;
+    // no canvas to make sprites on: every part is painted straight onto the context (gradients, outlines), about 200 calls a child
     expect(n).toBeGreaterThan(50);
-    expect(n).toBeLessThan(5 * 90);
+    expect(n).toBeLessThan(5 * 300);
+  });
+
+  it("with sprites: a child costs a few dozen canvas calls per frame, nothing is rebuilt after the first frame, nothing allocates canvases", () => {
+    let made = 0;
+    const fake = (): HTMLCanvasElement => {
+      made++;
+      return { width: 0, height: 0, getContext: () => ctxMock() } as unknown as HTMLCanvasElement;
+    };
+    setSpriteFactory(fake);
+    try {
+      const tr = trackerWith(5);
+      const r = recCtx();
+      drawKids(r.ctx, tr.slots, 500, 720, 1280); // first frame: the sprites are made
+      const first = avatarSpriteCount();
+      expect(first).toBeGreaterThan(10);
+      expect(made).toBe(first);
+      const second = recCtx();
+      drawKids(second.ctx, tr.slots, 4000, 720, 1280);
+      expect(avatarSpriteCount()).toBe(first); // calm heads + torso + paws + feet + tails are all there already
+      expect(made).toBe(first);
+      expect(second.calls()).toBeLessThan(5 * 110);
+      expect(second.calls()).toBeGreaterThan(5 * 20);
+      // a happy child (jump) and a blink need their own head sprites, once
+      tr.slots[0].signals.jump = true;
+      drawKids(recCtx().ctx, tr.slots, 4000, 720, 1280);
+      drawKids(recCtx().ctx, tr.slots, 4000, 720, 1280);
+      expect(avatarSpriteCount()).toBe(first + 1);
+      drawKids(recCtx().ctx, tr.slots, 50, 720, 1280); // t % 3200 < 110: blink
+      const withBlink = avatarSpriteCount();
+      drawKids(recCtx().ctx, tr.slots, 50, 720, 1280);
+      expect(avatarSpriteCount()).toBe(withBlink);
+    } finally {
+      setSpriteFactory(null);
+      clearAvatarSprites();
+    }
+  });
+
+  it("every animal has its own look: no two animals are painted with the same calls", () => {
+    const tr = trackerWith(5);
+    const sigs = new Set<string>();
+    for (let i = 0; i < 5; i++) {
+      const log: string[] = [];
+      const ctx = new Proxy({} as Record<string, unknown>, {
+        get: (_t, k) => (...a: unknown[]) => void log.push(String(k) + a.map((x) => (typeof x === "number" ? Math.round(x) : "")).join(",")),
+        set: (_t, k, v) => {
+          if (k === "fillStyle" || k === "strokeStyle") log.push(String(v));
+          return true;
+        },
+      }) as unknown as CanvasRenderingContext2D;
+      drawKids(ctx, [tr.slots[i]], 0);
+      sigs.add(log.join("|"));
+    }
+    expect(sigs.size).toBe(5);
+    expect(KID_ANIMALS.map((a) => a.id)).toEqual(["quyon", "ayiq", "mushuk", "kuchuk", "baqa"]);
   });
 });
 
@@ -252,6 +308,7 @@ function recCtx(): { ctx: CanvasRenderingContext2D; calls: () => number; arcs: n
         (...a: unknown[]) => {
           rec.n++;
           if (k === "arc") rec.arcs.push(a[2] as number);
+          if (k === "ellipse") rec.arcs.push(Math.max(a[2] as number, a[3] as number));
           if (k === "fillText") rec.texts.push(String(a[0]));
         },
       set: (_t, k, v) => {
@@ -284,7 +341,10 @@ describe("avatars never vanish", () => {
     tr.slots[1].active = false;
     drawKids(none.ctx, tr.slots, 0, 720, 1280);
     expect(none.calls()).toBeLessThan(lost.calls());
-    expect(lostAlpha(2)).toBeGreaterThanOrEqual(0.4);
+    expect(lostAlpha(0)).toBeGreaterThan(0.8); // no jump when the hold time ends
+    expect(lostAlpha(0.5)).toBeLessThan(lostAlpha(0));
+    expect(lostAlpha(0.5)).toBeGreaterThan(lostAlpha(1));
+    expect(lostAlpha(3)).toBeGreaterThanOrEqual(0.15);
   });
 
   it("a child whose head and shoulders are hardly seen (far away) still gets an avatar", () => {

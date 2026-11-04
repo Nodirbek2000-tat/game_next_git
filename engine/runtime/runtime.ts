@@ -23,6 +23,10 @@ import { Tracker, PLAYER_COLORS } from "../tracking/tracker";
 import { KidTracker, MAX_KIDS, type KidSlot } from "../tracking/kids";
 import { CrowdVision } from "../tracking/crowdVision";
 import { CROWD_CFG } from "../tracking/crowdConfig";
+import { MoveNetDetector } from "../tracking/movenet";
+import { MoveNetWorkerDetector } from "../tracking/moveNetWorker";
+import type { PoseDetectorLike } from "../tracking/moveNetProtocol";
+import { resolvePoseBackend, type PoseBackend } from "../tracking/poseBackend";
 import type {
   AudioApi,
   DetectionResult,
@@ -36,6 +40,7 @@ import type {
   HudApi,
   HudValues,
   PlayerFrame,
+  QualityLevel,
   QualityParams,
   RunState,
   WorldPoint,
@@ -105,6 +110,12 @@ export class EngineRuntime implements EngineApi {
   fx = new Fx2D();
   audioEngine: AudioEngine;
   detector: Detector | null = null;
+  /** crowd games with ?pose=movenet: the MoveNet MultiPose detector (worker; ?pose=movenet-main = main thread) instead of `detector` (MediaPipe) */
+  moveNet: PoseDetectorLike | null = null;
+  /** aborted by destroy(): stops a MoveNet worker that is still loading / compiling */
+  private moveNetStart: AbortController | null = null;
+  /** set with `moveNet`: starts MediaPipe when MoveNet breaks while playing (lost WebGL context...) */
+  private toMediaPipe: (() => Promise<void>) | null = null;
   device: DeviceProfile = { tier: 2, isMobile: false, gpu: "—", detected: false, cores: 0, memory: 0, software: false, webgl: true };
   stream: MediaStream | null = null;
   video: HTMLVideoElement | null = null;
@@ -144,6 +155,11 @@ export class EngineRuntime implements EngineApi {
   private lastDetectNow = 0;
   private lastGrab = -1e9;
   private fpsEma = 60;
+  /** longest gap between two rendered frames: the one being measured and the last finished 2 s window (ms), for the debug line */
+  private gapCur = 0;
+  private gapShown = 0;
+  private gapWinAt = 0;
+  private lastStepAt = 0;
   private detEma = 0;
   private lastDetStamp = 0;
   private lat = new LatencyTracker();
@@ -472,6 +488,7 @@ export class EngineRuntime implements EngineApi {
       useRunUI.getState().patch({ loading: { ...cur, pct: Math.max(cur.pct, Math.round(pct)), label } });
     };
     const [mod, device] = await Promise.all([this.init.load(), detectDevice()]);
+    if (this.destroyed) return;
     this.module = mod.default;
     this.device = device;
     if (!device.webgl && !this.crowd) throw new Error("nowebgl");
@@ -506,10 +523,76 @@ export class EngineRuntime implements EngineApi {
       prog(100, "Tayyor");
       return;
     }
-    const poseModel = resolvePoseModel(s.poseModel, device);
+    const mode = this.crowd && !this.module.meta.needsHands ? this.moveNetMode() : null;
+    if (mode) {
+      // fallback chain: MoveNet in a worker (WebGL in OffscreenCanvas) -> MediaPipe. The main-thread MoveNet only when asked for
+      // (?pose=movenet-main): it blocks rendering ~20 ms per call, so it is never chosen automatically.
+      const vid = this.video;
+      const abort = new AbortController();
+      this.moveNetStart = abort;
+      try {
+        const opts = {
+          maxPeople: this.wantedPoses(),
+          side: this.moveNetSide(),
+          camera: vid?.videoWidth ? { w: vid.videoWidth, h: vid.videoHeight } : null,
+          signal: abort.signal,
+          onProgress: (pct: number, label: string) => prog(12 + pct * 0.88, label),
+        };
+        const mn: PoseDetectorLike = mode === "worker" ? await MoveNetWorkerDetector.create(opts) : await MoveNetDetector.create(opts);
+        if (this.destroyed) {
+          mn.close();
+          return;
+        }
+        this.moveNet = mn;
+        this.poseCount = this.wantedPoses();
+        // main thread: the calls are spaced by their own duration (the scheduler's main-thread mode); worker: the default one stays
+        if (mn.where === "main") this.sched = new DetectionScheduler({ cores: device.cores || 4, level, mainThread: true, mobile: device.isMobile, targetFps: this.renderCap });
+        this.toMediaPipe = () => {
+          this.sched = new DetectionScheduler({ cores: device.cores || 4, level, mainThread: false, mobile: device.isMobile, targetFps: this.renderCap });
+          this.kidTracker.cycleMs = 0;
+          return this.startMediaPipe(device, s.poseModel, level, () => undefined);
+        };
+        this.startDetectLoop();
+        return;
+      } catch (e) {
+        if (this.destroyed) return;
+        // no worker WebGL / model not reachable / timeout: the normal MediaPipe path below
+        console.warn("MoveNet unavailable, using MediaPipe:", e);
+      } finally {
+        if (this.moveNetStart === abort) this.moveNetStart = null;
+      }
+    }
+    await this.startMediaPipe(device, s.poseModel, level, prog);
+    if (!this.destroyed && this.detector) this.startDetectLoop();
+  }
+
+  /**
+   * Crowd games: ?pose=movenet (remembered in localStorage "harakat.pose") selects the MoveNet detector in a worker; ?pose=mediapipe
+   * switches back; ?pose=movenet-main is the main-thread MoveNet (debug, not remembered).
+   */
+  private moveNetMode(): "worker" | "main" | null {
+    let store: Storage | null = null;
+    try {
+      store = localStorage;
+    } catch {
+      /* storage blocked */
+    }
+    const b: PoseBackend = resolvePoseBackend(this.query, store, CROWD_CFG.movenet.defaultBackend);
+    return b === "movenet" ? "worker" : b === "movenet-main" ? "main" : null;
+  }
+
+  /** ?mnside=320: a fixed picture size for MoveNet (comparing on a real camera); otherwise it adapts to the device. */
+  private moveNetSide(): number | null {
+    const n = Number(this.query.get("mnside"));
+    return Number.isFinite(n) && n >= 96 ? n : null;
+  }
+
+  /** The MediaPipe detector (worker, else main thread), the crowd crops and the detection loop. */
+  private async startMediaPipe(device: DeviceProfile, poseSetting: "auto" | "lite" | "full", level: QualityLevel, prog: (pct: number, label: string) => void): Promise<void> {
+    const poseModel = resolvePoseModel(poseSetting, device);
     this.detector = await Detector.create({
       poseModel,
-      hands: this.module.meta.needsHands,
+      hands: this.module?.meta.needsHands ?? false,
       preferWorker: this.init.worker !== false,
       // crowd: up to 5 children, small bodies -> lower detection confidence (also kept when the room gets dark, see updateLight)
       numPoses: this.wantedPoses(),
@@ -524,9 +607,8 @@ export class EngineRuntime implements EngineApi {
     }
     this.poseCount = this.wantedPoses();
     this.rememberDelegate();
-    if (this.crowd && !this.module.meta.needsHands) this.startCrowdVision(this.detector);
+    if (this.crowd && !this.module?.meta.needsHands) this.startCrowdVision(this.detector);
     if (this.detector.info.where === "main") this.sched = new DetectionScheduler({ cores: device.cores || 4, level, mainThread: true, mobile: device.isMobile, targetFps: this.renderCap });
-    this.startDetectLoop();
   }
 
   /**
@@ -657,8 +739,11 @@ export class EngineRuntime implements EngineApi {
       if (this.destroyed) return;
       const now = performance.now();
       const det = this.detector;
-      const minGap = Math.max(1000 / this.config.analysisFps, this.sched.minIntervalMs(this.lat.infer));
-      if (det && !this.busy && v.readyState >= 2 && v.currentTime !== this.lastVT && now - this.lastStart >= minGap - 2) {
+      const mn = this.moveNet;
+      // MoveNet in a worker is capped (the integrated GPU keeps headroom for compositing); the scheduler lowers the rate further when frames drop
+      const minGap = Math.max(1000 / this.config.analysisFps, this.sched.minIntervalMs(this.lat.infer), mn ? 1000 / CROWD_CFG.movenet.maxHz : 0);
+      if (mn?.broken) this.leaveMoveNet(mn);
+      if ((det || mn) && !this.busy && v.readyState >= 2 && v.currentTime !== this.lastVT && now - this.lastStart >= minGap - 2) {
         this.lastVT = v.currentTime;
         this.lastStart = now;
         this.busy = true;
@@ -667,9 +752,14 @@ export class EngineRuntime implements EngineApi {
         const opts: DetectOptions = { maxSide: this.sched.maxSide, lut: this.light.state.active ? this.lut : null };
         // crowd games: one crop of the picture per call (round-robin) while the crop models are ready, else the whole frame
         const vis = this.crowdVis;
-        const crops = vis ? vis.plan(v.videoWidth, v.videoHeight, det.tilesReady) : null;
-        const run: Promise<DetectionResult | null> =
-          vis && crops ? det.detectTiles(v, now, crops, opts).then((out) => (out ? vis.ingest(out, crops, captureTs) : null)) : det.detect(v, now, wantHands, opts);
+        const crops = vis && det ? vis.plan(v.videoWidth, v.videoHeight, det.tilesReady) : null;
+        const run: Promise<DetectionResult | null> = mn
+          ? mn.detect(v, opts) // MoveNet: the whole picture in one pass (up to 6 people)
+          : det && vis && crops
+            ? det.detectTiles(v, now, crops, opts).then((out) => (out ? vis.ingest(out, crops, captureTs) : null))
+            : det
+              ? det.detect(v, now, wantHands, opts)
+              : Promise.resolve(null);
         run
           .then((res) => {
             // applied right away (not at the next render frame): the render loop extrapolates from the capture time anyway
@@ -678,6 +768,9 @@ export class EngineRuntime implements EngineApi {
               if (vis) {
                 vis.report(done / 1000, done - now, this.sched.minIntervalMs(this.lat.infer));
                 this.kidTracker.cycleMs = vis.ctl.cycleMs;
+              } else if (mn && this.detEma > 0.5) {
+                // every child is refreshed by every detection: the hold times follow the real detection interval
+                this.kidTracker.cycleMs = Math.min(1000, 1000 / this.detEma);
               }
               this.onDetection({ res, captureTs, startTs: now, doneTs: done }, done, false);
             }
@@ -685,6 +778,7 @@ export class EngineRuntime implements EngineApi {
           .catch((e) => console.warn(e))
           .finally(() => {
             this.busy = false;
+            if (mn?.broken) this.leaveMoveNet(mn);
           });
       }
       schedule();
@@ -720,6 +814,17 @@ export class EngineRuntime implements EngineApi {
       } else requestAnimationFrame(() => tick());
     };
     schedule();
+  }
+
+  /** MoveNet keeps failing (lost WebGL context...): drop it and carry on with MediaPipe. */
+  private leaveMoveNet(mn: PoseDetectorLike): void {
+    if (this.moveNet !== mn) return;
+    console.warn("MoveNet stopped working, switching to MediaPipe");
+    this.moveNet = null;
+    mn.close();
+    const go = this.toMediaPipe;
+    this.toMediaPipe = null;
+    void go?.().catch((e) => console.warn("MediaPipe could not start:", e));
   }
 
   private grabSmall(): void {
@@ -836,6 +941,17 @@ export class EngineRuntime implements EngineApi {
   }
 
   // ---------------------------------------------------------------- per frame
+  /** Longest gap between two engine frames over the last 2 s (ms): a heavy task on the main thread shows up here, so a "freezes" report can be checked. */
+  private noteFrameGap(now: number): void {
+    if (this.lastStepAt > 0) this.gapCur = Math.max(this.gapCur, now - this.lastStepAt);
+    this.lastStepAt = now;
+    if (now - this.gapWinAt >= 2000) {
+      this.gapWinAt = now;
+      this.gapShown = this.gapCur;
+      this.gapCur = 0;
+    }
+  }
+
   /** Called once per rendered frame by the EngineDriver (inside the R3F canvas). */
   step(now: number, delta: number): void {
     if (this.destroyed) return;
@@ -843,6 +959,7 @@ export class EngineRuntime implements EngineApi {
     // frame cap (phones: 30 fps): the 3D canvas and the 2D layer only redraw every other display frame; the fps the quality
     // controller sees is the rate of the frames that were really drawn
     this.accDelta += delta;
+    this.noteFrameGap(now);
     const cap = this.renderCap;
     this.drawNow = cap >= 60 || now - this.lastRenderAt >= 1000 / cap - 4 || this._state === "loading";
     if (this.drawNow) {
@@ -1287,11 +1404,20 @@ export class EngineRuntime implements EngineApi {
     void h;
   }
 
-  /** Debug line of crowd games (?debug=1): bodies found, crops in use, detection rate, model time. */
+  /** Debug line of crowd games (?debug=1): which detector, bodies found, crops in use, detection rate, model time. */
   private crowdDebug(): string {
     const vis = this.crowdVis;
     const v = this.video;
     const cam = v?.videoWidth ? `${v.videoWidth}×${v.videoHeight}` : "—";
+    const mn = this.moveNet;
+    const slots0 = this.kidTracker.slots.map((k) => (k.active ? (k.present ? (k.held ? "~" : "+") : "…") : "-")).join("");
+    if (mn) {
+      const st = mn.stats;
+      const mem = mn.memory();
+      const where = mn.where === "worker" ? "ishchi oqim" : "asosiy oqim";
+      const inside = mn.where === "worker" ? ` (ishchi ${Math.round(st.workerMs)} ms)` : "";
+      return `MoveNet [${where}] · tanalar ${st.people} · bolalar ${this.kidTracker.count} [${slots0}] · aniqlash ${this.detEma.toFixed(1)}/s · model ${Math.round(st.ms)} ms${inside} · bloklash ${st.blockMs.toFixed(1)} ms · kirish ${st.side} px · tf ${mem.tensors} tensor · eng uzun kadr ${Math.round(this.gapShown)} ms · kamera ${cam}`;
+    }
     const tiled = !!vis?.tiled;
     const n = vis && tiled ? vis.ctl.count : 1;
     const rate = this.detEma;
@@ -1299,7 +1425,7 @@ export class EngineRuntime implements EngineApi {
     const bodies = vis && tiled ? vis.bodies : this.tracker.people.length;
     const slots = this.kidTracker.slots.map((k) => (k.active ? (k.present ? (k.held ? "~" : "+") : "…") : "-")).join("");
     const crops = tiled ? `${n} bo‘lak (aylanma)` : "to‘liq kadr";
-    return `tanalar ${bodies} · bolalar ${this.kidTracker.count} [${slots}] · ${crops} · aniqlash ${rate.toFixed(1)}/s (har bola ≈${per.toFixed(1)}/s) · model ${Math.round(this.lat.infer)} ms · aylanish ${Math.round(vis?.ctl.cycleMs ?? 0)} ms · kamera ${cam}`;
+    return `MediaPipe · tanalar ${bodies} · bolalar ${this.kidTracker.count} [${slots}] · ${crops} · aniqlash ${rate.toFixed(1)}/s (har bola ≈${per.toFixed(1)}/s) · model ${Math.round(this.lat.infer)} ms · aylanish ${Math.round(vis?.ctl.cycleMs ?? 0)} ms · eng uzun kadr ${Math.round(this.gapShown)} ms · kamera ${cam}`;
   }
 
   private publishDebug(): void {
@@ -1322,8 +1448,8 @@ export class EngineRuntime implements EngineApi {
         crowd: this.crowd ? this.crowdDebug() : "",
         locked: this.crowd ? this.kidTracker.slots.map((k) => `${k.slot + 1}:${k.active ? (k.present ? "✔" : "…") : "—"}`).join("  ") : lock,
         gesture: this._players.map((p) => p.gestures.name).join(" | "),
-        backend: this.fakeWin().__fake ? "window.__fake" : d ? `${d.where} · ${d.delegate.pose}${d.delegate.hand ? "/" + d.delegate.hand : ""}` : "—",
-        poseModel: d?.poseModel ?? "—",
+        backend: this.fakeWin().__fake ? "window.__fake" : this.moveNet ? `MoveNet · ${this.moveNet.where === "worker" ? "ishchi oqim" : "asosiy oqim"} · ${this.moveNet.backend}` : d ? `${d.where} · ${d.delegate.pose}${d.delegate.hand ? "/" + d.delegate.hand : ""}` : "—",
+        poseModel: this.moveNet ? "movenet multipose lightning" : (d?.poseModel ?? "—"),
         quality: `${this.quality.level} ×${this.quality.resolutionScale}`,
         gpu: `${this.device.gpu} (tier ${this.device.tier})`,
       },
@@ -1342,6 +1468,10 @@ export class EngineRuntime implements EngineApi {
     this.audioEngine.dispose();
     this.detector?.close();
     this.detector = null;
+    this.moveNetStart?.abort();
+    this.moveNetStart = null;
+    this.moveNet?.close();
+    this.moveNet = null;
     stopStream(this.stream);
     this.stream = null;
     if (this.video) this.video.srcObject = null;

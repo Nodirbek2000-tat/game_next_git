@@ -26,20 +26,20 @@ describe("TileController", () => {
 
   it("steps down to the whole frame when a round of crops takes too long, not before downAfterSec", () => {
     const c = new TileController([2, 1]);
-    // 2 crops x 90 ms = 180 ms > maxCycleMs
-    const t = feed(c, 0, A.downAfterSec - 0.5, 90);
+    // 2 crops x 153 ms = 306 ms > maxCycleMs
+    const t = feed(c, 0, A.downAfterSec - 0.5, 150);
     expect(c.count).toBe(2);
-    feed(c, t, 2, 90);
+    feed(c, t, 2, 150);
     expect(c.count).toBe(1);
   });
 
   it("3 -> 2 -> 1 one rung at a time, with a pause between the changes", () => {
     const c = new TileController([3, 2, 1]);
-    let t = feed(c, 0, A.downAfterSec + 1, 70); // 3 x 73 = 219 ms
-    expect(c.count).toBe(2); // 2 x 73 = 146 < 150: stays here
-    t = feed(c, t, 10, 70);
+    let t = feed(c, 0, A.downAfterSec + 1, 100); // 3 x 103 = 309 ms
+    expect(c.count).toBe(2); // 2 x 103 = 206 < 260: stays here
+    t = feed(c, t, 10, 100);
     expect(c.count).toBe(2);
-    feed(c, t, 10, 90);
+    feed(c, t, 10, 150);
     expect(c.count).toBe(1);
   });
 
@@ -54,7 +54,7 @@ describe("TileController", () => {
   it("climbs back after a long calm spell, and waits longer after a failed attempt", () => {
     const c = new TileController([2, 1]);
     let t = feed(c, 0, 5, 12); // learns the crop time
-    t = feed(c, t, 6, 100); // too slow -> whole frame
+    t = feed(c, t, 6, 150); // too slow -> whole frame
     expect(c.count).toBe(1);
     // whole frame is fast now (a crop would be ~ 0.75 x 20 ms): up after upAfterSec
     t = feed(c, t, A.upAfterSec - 3, 20);
@@ -62,7 +62,7 @@ describe("TileController", () => {
     t = feed(c, t, 8, 20);
     expect(c.count).toBe(2);
     // slow again right after: down again, and the next up wait is doubled
-    t = feed(c, t, 6, 100);
+    t = feed(c, t, 6, 150);
     expect(c.count).toBe(1);
     const t1 = t;
     t = feed(c, t, A.upAfterSec + 1, 20);
@@ -74,9 +74,9 @@ describe("TileController", () => {
 
   it("does not climb while the whole frame itself is slow", () => {
     const c = new TileController([2, 1]);
-    const t = feed(c, 0, 4, 100);
+    const t = feed(c, 0, 4, 150);
     expect(c.count).toBe(1);
-    feed(c, t, 60, 80);
+    feed(c, t, 60, 130);
     expect(c.count).toBe(1);
   });
 
@@ -133,7 +133,7 @@ describe("CrowdVision", () => {
   it("when the model is too slow the next plan is the whole frame and the older crop data is dropped", () => {
     const v = new CrowdVision({ force: null, allow: true });
     expect(v.plan(W, H, 2)).not.toBeNull();
-    feed(v, 0, 6, 100);
+    feed(v, 0, 6, 150);
     expect(v.ctl.count).toBe(1);
     expect(v.plan(W, H, 2)).toBeNull();
     expect(v.describe()).toBe("to‘liq kadr");

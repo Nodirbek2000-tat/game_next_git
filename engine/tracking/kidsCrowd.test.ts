@@ -195,6 +195,84 @@ describe("holding a child through misses", () => {
   });
 });
 
+describe("children standing close together", () => {
+  /** a body is 0.5 of the picture high -> a shoulder width of ~128 px; the children stand 1.0-1.3 shoulder widths apart and sway/step */
+  for (const n of [3, 4, 5]) {
+    it(`${n} children shoulder to shoulder, noisy, with misses: nobody swaps, nobody joins twice`, () => {
+      const r = new Rig();
+      let seed = 7 + n;
+      const rnd = (): number => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+      const base = Array.from({ length: n }, (_, i) => 0.5 + (i - (n - 1) / 2) * 0.1);
+      const truth = (s: number): Kid[] =>
+        base.map((x, i) => ({ cx: x + 0.018 * Math.sin(s * 1.6 + i * 2.1), top: 0.2 + 0.015 * Math.sin(s * 2.3 + i) }));
+      const jitter = (k: Kid): Kid => ({ ...k, cx: k.cx + (rnd() - 0.5) * 0.006, top: (k.top ?? 0.2) + (rnd() - 0.5) * 0.006 });
+      const owner: number[] = [];
+      r.run(
+        10,
+        70, // all in one pass (MoveNet) or a crop every 70 ms
+        (s) => truth(s).filter(() => rnd() > 0.15).map(jitter),
+        (rr, s) => {
+          if (s > 1.2 && s < 1.25 && owner.length === 0) {
+            // the slot nearest to each child (left to right on the stage = right to left on the camera)
+            const t = truth(s);
+            t.forEach((k) => {
+              let best = 0;
+              for (let i = 1; i < 5; i++) if (Math.abs(rr.tr.slots[i].center.x - (W - k.cx * W)) < Math.abs(rr.tr.slots[best].center.x - (W - k.cx * W))) best = i;
+              owner.push(best);
+            });
+          }
+        },
+      );
+      expect(owner.length).toBe(n);
+      expect(new Set(owner).size).toBe(n);
+      expect(r.joins).toBe(n);
+      expect(r.leaves).toBe(0);
+      const t = truth((r.t - 1000) / 1000);
+      owner.forEach((slot, child) => expect(Math.abs(r.tr.slots[slot].center.x - (W - t[child].cx * W))).toBeLessThan(0.06 * W));
+    });
+  }
+
+  it("two neighbours swap places (walk past each other): each animal stays with its own child", () => {
+    const r = new Rig();
+    const A = (s: number): Kid => ({ cx: 0.45 + Math.min(1, s / 2) * 0.1 });
+    const B = (s: number): Kid => ({ cx: 0.55 - Math.min(1, s / 2) * 0.1 });
+    r.run(0.6, 50, () => [A(0), B(0)]);
+    const sa = r.tr.slots[0].center.x > r.tr.slots[1].center.x ? 0 : 1; // A is left in the picture = larger stage x
+    r.run(3, 50, (s) => [A(s), B(s)]);
+    expect(r.joins).toBe(2);
+    expect(Math.abs(r.tr.slots[sa].center.x - (W - 0.55 * W))).toBeLessThan(0.05 * W);
+    expect(Math.abs(r.tr.slots[1 - sa].center.x - (W - 0.45 * W))).toBeLessThan(0.05 * W);
+  });
+});
+
+describe("a child who is missed keeps moving gently and keeps the animal", () => {
+  it("a walking child is not seen for 1.3 s: the animal glides on and stops (never jumps), then follows again from the same slot", () => {
+    const r = new Rig();
+    const x = (s: number): number => 0.2 + 0.1 * s;
+    let prev = 0;
+    let maxStep = 0;
+    r.run(2, 60, (s) => [{ cx: x(s) }]);
+    prev = r.tr.slots[0].pts.head.x;
+    const x0 = prev;
+    r.run(1.3, 60, () => [], (rr) => {
+      maxStep = Math.max(maxStep, Math.abs(rr.tr.slots[0].pts.head.x - prev));
+      prev = rr.tr.slots[0].pts.head.x;
+    });
+    expect(r.tr.slots[0].active).toBe(true);
+    const moved = x0 - r.tr.slots[0].pts.head.x;
+    expect(moved).toBeGreaterThan(10); // it glided on a little
+    expect(moved).toBeLessThan(0.1 * W * 0.7); // but not a runaway
+    expect(maxStep).toBeLessThan(6);
+    const at = r.tr.slots[0].pts.head.x;
+    r.run(0.1, 60, () => []);
+    expect(Math.abs(r.tr.slots[0].pts.head.x - at)).toBeLessThan(3); // settled: no creep
+    r.run(1, 60, (s) => [{ cx: x(3.3 + s) }]);
+    expect(r.joins).toBe(1);
+    expect(r.tr.slots[0].present).toBe(true);
+    expect(Math.abs(r.tr.slots[0].center.x - (W - x(4.3 ) * W))).toBeLessThan(0.08 * W);
+  });
+});
+
 describe("joining", () => {
   it("one false detection does not make a child; two at the same place do", () => {
     const r = new Rig();

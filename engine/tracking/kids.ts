@@ -1,4 +1,3 @@
-import { OneEuro } from "./oneEuro";
 import { velAlpha } from "./prediction";
 import { CROWD_CFG } from "./crowdConfig";
 import type { Person } from "../types";
@@ -9,7 +8,9 @@ import type { Person } from "../types";
 // stillness, armsOut) tuned for small, quickly moving bodies. Nothing is allocated after construction.
 //
 // Detections of a crowd game arrive unevenly (crops of the picture are analysed round-robin, so a child is refreshed every ~70-300 ms):
-//  - the drawn points chase a target that coasts along a velocity that fades out (CROWD_CFG.motion): nothing freezes, nothing jumps,
+//  - the measured points are smoothed by the SIZE of their change (CROWD_CFG.smooth): a child who stands still does not shake, a child who
+//    walks is followed at once; the body (shoulder centre) and the other points (offsets from the body) are filtered separately,
+//  - the drawn points chase a target that coasts along the (gated) velocity (CROWD_CFG.motion): nothing freezes, nothing jumps,
 //  - a child stays "present" (and keeps the slot) through short misses (CROWD_CFG.hold),
 //  - a new child must be seen twice before it takes a slot, and never takes the slot of a child who was seen a moment ago,
 //  - matching uses predicted positions and sizes and prefers slots that were seen recently (CROWD_CFG.match).
@@ -106,6 +107,8 @@ export interface KidSlot {
   held?: boolean;
   /** seconds since the child was last seen */
   lostFor: number;
+  /** seconds since `present` turned false (0 while present): what the fade of a lost child is timed from */
+  goneFor: number;
   /** seconds since the slot was taken */
   seenFor: number;
   /** true during exactly one render frame when a child takes the slot / leaves it */
@@ -125,7 +128,6 @@ export const KIDS_CFG = {
   minVis: 0.25,
   /** a detection is a child only when shoulders (mean) or the nose are seen this well */
   personVis: 0.2,
-  filter: { minCutoff: 1.4, beta: 8, dCutoff: 4 },
   // motion between detections, holding, joining and slot matching: CROWD_CFG (crowdConfig.ts)
   jump: { enter: 0.22, exit: 0.1, cooldownMs: 350, fastRise: 1.2, freezeMs: 800 },
   squat: { enter: 0.28, exit: 0.14 },
@@ -140,6 +142,11 @@ export const KIDS_CFG = {
 // indices of the 13 tracked MediaPipe landmarks
 const KP = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28] as const;
 const N_KP = KP.length;
+/** index of the body anchor (shoulder centre) in the per-point arrays: one more "point" after the 13 landmarks */
+const ANC = N_KP;
+const N_ALL = N_KP + 1;
+/** landmarks (index into KP) that form the rigid frame around the anchor: head, shoulders, hips; the others are limbs */
+const IS_TORSO: readonly boolean[] = [true, true, true, false, false, false, false, true, true, false, false, false, false];
 const LW = 5;
 const RW = 6;
 /** head, wrists, hips, ankles: the points whose motion counts for the "stillness" energy */
@@ -157,6 +164,7 @@ function mkSlot(i: number): KidSlot {
     present: false,
     held: false,
     lostFor: 0,
+    goneFor: 0,
     seenFor: 0,
     joined: false,
     left: false,
@@ -196,12 +204,22 @@ interface Swing {
 /** Mutable per-slot state that games never see. */
 class Internal {
   arr: KidPt[];
-  fx: OneEuro[];
-  fy: OneEuro[];
-  filt = new Float32Array(N_KP * 2);
-  vel = new Float32Array(N_KP * 2);
+  /** smoothed state: [N_KP] = body anchor, [k] = offset of landmark k from the anchor (before the dead zone) */
+  st = new Float32Array(N_ALL * 2);
+  /** the same after the dead zone */
+  out = new Float32Array(N_ALL * 2);
+  /** filtered position of every point in stage px ([N_KP] = body anchor) */
+  filt = new Float32Array(N_ALL * 2);
+  /** smoothed velocity, px/s (what the signals use) */
+  vel = new Float32Array(N_ALL * 2);
+  /** positions and capture time at the last velocity update: velocities are measured over at least `velMinGapMs` */
+  vref = new Float32Array(N_ALL * 2);
+  velT = 0;
+  hasVel = false;
+  /** the velocity the drawn points are extrapolated along: `vel`, small drifts (noise) taken out */
+  ev = new Float32Array(N_ALL * 2);
   /** drawn position of every point (chases the extrapolated target) */
-  rx = new Float32Array(N_KP * 2);
+  rx = new Float32Array(N_ALL * 2);
   rInit = false;
   lastRender = 0;
   /** smoothed time between two detections of this child, s */
@@ -237,16 +255,16 @@ class Internal {
 
   constructor(slot: KidSlot) {
     this.arr = [slot.pts.head, slot.pts.ls, slot.pts.rs, slot.pts.le, slot.pts.re, slot.pts.lw, slot.pts.rw, slot.pts.lh, slot.pts.rh, slot.pts.lk, slot.pts.rk, slot.pts.la, slot.pts.ra];
-    const f = KIDS_CFG.filter;
-    this.fx = Array.from({ length: N_KP }, () => new OneEuro(f.minCutoff, f.beta, f.dCutoff));
-    this.fy = Array.from({ length: N_KP }, () => new OneEuro(f.minCutoff, f.beta, f.dCutoff));
   }
 
   reset(): void {
-    for (const o of this.fx) o.reset();
-    for (const o of this.fy) o.reset();
+    this.st.fill(0);
+    this.out.fill(0);
     this.filt.fill(0);
     this.vel.fill(0);
+    this.ev.fill(0);
+    this.vref.fill(0);
+    this.hasVel = false;
     this.rx.fill(0);
     this.rInit = false;
     this.lastRender = 0;
@@ -271,6 +289,42 @@ function mkSwing(): Swing {
 }
 
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+
+/**
+ * One smoothing step of a point (a body anchor or an offset from it), in stage px. `z` is the new measurement, `st` the smoothed state,
+ * `out` the same after the dead zone (the output only moves once the state is more than `dead` x `sc` away from it).
+ * The weight of a measurement is `g0` (the plain time-based smoothing, small) for a change far below `knee` (x `sc`) and rises steeply to 1
+ * around `knee`: noise is averaged, real motion passes. Nothing is allocated.
+ */
+function smoothPt(st: Float32Array, out: Float32Array, k: number, zx: number, zy: number, g0: number, sc: number, knee: number, dead: number): void {
+  const j = k * 2;
+  let dx = zx - st[j];
+  let dy = zy - st[j + 1];
+  const n = Math.hypot(dx, dy) / (sc * knee);
+  const n2 = n * n;
+  const w = (n2 * n2) / (1 + n2 * n2);
+  const g = g0 + (1 - g0) * w;
+  st[j] += dx * g;
+  st[j + 1] += dy * g;
+  dx = st[j] - out[j];
+  dy = st[j + 1] - out[j + 1];
+  const d = Math.hypot(dx, dy);
+  const lim = dead * sc;
+  if (d > lim) {
+    const f = (d - lim) / d;
+    out[j] += dx * f;
+    out[j + 1] += dy * f;
+  }
+}
+
+/** Slow smoothing of a size (relative change): a change of the order of `knee` (relative) is real and passes at once. */
+function smoothSize(cur: number, target: number, dtSec: number, tauMs: number, knee: number): number {
+  const n = Math.abs(target / Math.max(1e-3, cur) - 1) / knee;
+  const n2 = n * n;
+  const w = (n2 * n2) / (1 + n2 * n2);
+  const g0 = 1 - Math.exp((-dtSec * 1000) / tauMs);
+  return cur + (target - cur) * (g0 + (1 - g0) * w);
+}
 
 /**
  * Turns the tracker's raw people into up to 5 stable kid slots (see file header).
@@ -520,55 +574,112 @@ export class KidTracker {
     it.cx = p.center.x;
     it.cy = p.center.y;
     it.lastSeenNow = now;
-    sl.center.x = p.center.x;
-    sl.center.y = p.center.y;
-    sl.scale = lerp(sl.scale, p.scale, 0.3);
+    const S = CROWD_CFG.smooth;
+    // size: the unit of every threshold, smoothed slowly (a noisy size makes the animal pulse)
+    sl.scale = fresh ? p.scale : smoothSize(sl.scale, p.scale, dtDet, S.scaleTauMs, S.scaleKnee);
+    const headTarget = Math.max(sl.scale * 0.42, Math.hypot(p.lm[7].x - p.lm[8].x, p.lm[7].y - p.lm[8].y) * 0.75);
+    sl.headR = fresh ? headTarget : smoothSize(sl.headR, headTarget, dtDet, S.scaleTauMs, S.scaleKnee);
     sl.present = true;
     sl.held = false;
     sl.lostFor = 0;
-    const va = velAlpha(dtDet, 30);
+    sl.goneFor = 0;
     // two measurements (e.g. from two crops that both contain the child) closer than a few ms must not make a velocity out of noise
     if (it.hasDet && cap - it.tDet >= 4 && cap - it.tDet < 1000) {
       const gap = (cap - it.tDet) / 1000;
       it.dtEma += (gap - it.dtEma) * 0.2;
       it.chaseDt = Math.max(it.dtEma, gap);
     }
-    const measureVel = it.hasDet && cap - it.tDet < MO.velGapMs;
-    const updVel = measureVel && cap - it.tDet >= 4;
-    const maxV = MO.maxSpeedScales * Math.max(20, sl.scale);
-    for (let k = 0; k < N_KP; k++) {
-      const src = p.lm[KP[k]];
-      const nx = it.fx[k].filter(src.x, cap);
-      const ny = it.fy[k].filter(src.y, cap);
-      const f = it.filt;
+    const gapV = cap - it.velT;
+    const measureVel = it.hasVel && gapV < MO.velGapMs;
+    // measured over a baseline of at least `velMinGapMs`: two detections of one child a few ms apart (crops that overlap) are mostly noise
+    const updVel = measureVel && gapV >= MO.velMinGapMs;
+    const dtV = Math.max(0.001, Math.min(MO.maxDtSec, gapV / 1000));
+    const sc = Math.max(20, sl.scale);
+    const maxV = MO.maxSpeedScales * sc;
+    const aUp = velAlpha(dtV, MO.velTauMs);
+    const kn2 = MO.velKnee * MO.velKnee;
+    // ---- 1) smoothing: the body anchor (shoulder centre), then every landmark as an offset from the filtered anchor
+    const { st, out, filt: f, vel, ev } = it;
+    const ax = (p.lm[11].x + p.lm[12].x) / 2;
+    const ay = (p.lm[11].y + p.lm[12].y) / 2;
+    const A = ANC * 2;
+    if (!it.hasDet || cap - it.tDet > 1000) {
+      // a new child, or one who was away for a long time: start at the measurement
+      st[A] = out[A] = ax;
+      st[A + 1] = out[A + 1] = ay;
+      for (let k = 0; k < N_KP; k++) {
+        const src = p.lm[KP[k]];
+        st[k * 2] = out[k * 2] = src.x - ax;
+        st[k * 2 + 1] = out[k * 2 + 1] = src.y - ay;
+      }
+    } else {
+      const gB = 1 - Math.exp((-dtDet * 1000) / S.body.tauMs);
+      const gT = 1 - Math.exp((-dtDet * 1000) / S.torso.tauMs);
+      const gL = 1 - Math.exp((-dtDet * 1000) / S.limb.tauMs);
+      smoothPt(st, out, ANC, ax, ay, gB, sc, S.body.knee, S.body.dead);
+      const bx = out[A];
+      const by = out[A + 1];
+      for (let k = 0; k < N_KP; k++) {
+        const src = p.lm[KP[k]];
+        const bad = 1 + S.lowVisKnee * (1 - Math.min(1, Math.max(0, src.v)));
+        if (IS_TORSO[k]) smoothPt(st, out, k, src.x - bx, src.y - by, gT, sc, S.torso.knee * bad, S.torso.dead);
+        else smoothPt(st, out, k, src.x - bx, src.y - by, gL, sc, S.limb.knee * bad, S.limb.dead);
+      }
+    }
+    // ---- 2) absolute filtered points and velocities (smoothed; the extrapolation velocity has small drifts taken out)
+    for (let q = 0; q < N_ALL; q++) {
+      const j = q * 2;
+      const nx = q === ANC ? out[A] : out[A] + out[j];
+      const ny = q === ANC ? out[A + 1] : out[A + 1] + out[j + 1];
       if (updVel) {
-        let vx = lerp(it.vel[k * 2], (nx - f[k * 2]) / dtDet, va);
-        let vy = lerp(it.vel[k * 2 + 1], (ny - f[k * 2 + 1]) / dtDet, va);
+        const rvx = (nx - it.vref[j]) / dtV;
+        const rvy = (ny - it.vref[j + 1]) / dtV;
+        const a = Math.hypot(rvx, rvy) < Math.hypot(vel[j], vel[j + 1]) ? 1 : aUp; // slowing down is taken at once: no overshoot when a child stops
+        let vx = lerp(vel[j], rvx, a);
+        let vy = lerp(vel[j + 1], rvy, a);
         const sp = Math.hypot(vx, vy);
         if (sp > maxV) {
           vx *= maxV / sp;
           vy *= maxV / sp;
         }
-        it.vel[k * 2] = vx;
-        it.vel[k * 2 + 1] = vy;
+        vel[j] = vx;
+        vel[j + 1] = vy;
+        const s2 = (Math.min(sp, maxV) / sc) * (Math.min(sp, maxV) / sc);
+        const gate = s2 / (s2 + kn2);
+        ev[j] = vx * gate;
+        ev[j + 1] = vy * gate;
       } else if (!measureVel) {
-        it.vel[k * 2] = it.vel[k * 2 + 1] = 0;
+        vel[j] = vel[j + 1] = ev[j] = ev[j + 1] = 0;
       }
-      f[k * 2] = nx;
-      f[k * 2 + 1] = ny;
-      const o = it.arr[k];
-      o.x = nx;
-      o.y = ny;
-      o.v = src.v;
+      f[j] = nx;
+      f[j + 1] = ny;
+      if (q < N_KP) {
+        const o = it.arr[q];
+        o.x = nx;
+        o.y = ny;
+        o.v = p.lm[KP[q]].v;
+      }
     }
+    if (!measureVel || updVel) {
+      for (let q = 0; q < N_ALL * 2; q++) it.vref[q] = f[q];
+      it.velT = cap;
+      it.hasVel = true;
+    }
+    // limbs swing back and forth: they are extrapolated less than the body (a waving hand must not fly past its turning point)
+    for (let k = 0; k < N_KP; k++) {
+      if (IS_TORSO[k]) continue;
+      ev[k * 2] = ev[A] + (ev[k * 2] - ev[A]) * MO.limbGain;
+      ev[k * 2 + 1] = ev[A + 1] + (ev[k * 2 + 1] - ev[A + 1]) * MO.limbGain;
+    }
+    sl.center.x = f[A];
+    sl.center.y = f[A + 1];
     // the drawn points start at the measurement for a new child (or one who was away for a long time) and chase it otherwise
     if (!it.rInit || cap - it.tDet > 1000) {
-      for (let q = 0; q < N_KP * 2; q++) it.rx[q] = it.filt[q];
+      for (let q = 0; q < N_ALL * 2; q++) it.rx[q] = it.filt[q];
       it.rInit = true;
     }
     it.tDet = cap;
     it.hasDet = true;
-    sl.headR = Math.max(sl.scale * 0.42, Math.hypot(p.lm[7].x - p.lm[8].x, p.lm[7].y - p.lm[8].y) * 0.75);
     this.signals(sl, it, dtDet, cap);
   }
 
@@ -711,6 +822,7 @@ export class KidTracker {
       sl.lostFor = lost;
       sl.seenFor = Math.max(0, (now - it.joinedAt) / 1000);
       sl.present = lost < hold;
+      sl.goneFor = sl.present ? 0 : lost - hold;
       sl.held = sl.present && lost > H.heldAfterSec;
       if (sl.present) count++;
       else {
@@ -723,34 +835,59 @@ export class KidTracker {
 
   /**
    * Render-rate update: moves the points to where the child is now; frees the slots of children who left.
-   * Every point has a target = last measurement + velocity that fades out with time (so a child keeps moving through a missed
-   * detection and slows to a stop instead of freezing or flying off); the drawn point chases the target, which hides the jump when
-   * the next measurement arrives.
+   * Every point has a target = last filtered measurement + velocity x the age of that measurement (camera + model delay + time since it
+   * arrived), the velocity having small drifts (noise) taken out and the extra fading out after `coastMs`: a child keeps moving through a
+   * missed detection and slows to a stop instead of freezing or flying off. The drawn point chases the target (aimed a little ahead, so
+   * the chase itself adds no lag to a steady walk), which hides the jump when the next measurement arrives.
    */
   extrapolate(now: number, lead: number = CROWD_CFG.motion.leadMs): void {
     this.sweep(now);
     const MO = CROWD_CFG.motion;
+    const coast = MO.coastMs / 1000;
     const tau = MO.holdTauMs / 1000;
     for (let i = 0; i < this.maxKids; i++) {
       const sl = this.slots[i];
-      if (!sl.active || !sl.present) continue;
+      // a child who is missed for a moment (present or not yet freed) keeps gliding to the end of its coast: never a frozen animal
+      if (!sl.active) continue;
       const it = this.ints[i];
       const age = Math.max(0, now - it.tDet + lead) / 1000;
-      const reach = tau * (1 - Math.exp(-age / tau)) * MO.gain;
+      const reach = (age <= coast ? age : coast + tau * (1 - Math.exp(-(age - coast) / tau))) * MO.gain;
       const dtR = it.lastRender ? (now - it.lastRender) / 1000 : 0;
       it.lastRender = now;
       if (dtR > 0) it.chaseDt += (it.dtEma - it.chaseDt) * (1 - Math.exp(-dtR / MO.chaseRelaxSec));
       const chaseMs = Math.min(MO.chaseMaxMs, Math.max(MO.chaseMinMs, it.chaseDt * 1000 * MO.chaseFrac));
-      const alpha = !it.rInit || dtR > MO.snapAfterSec ? 1 : 1 - Math.exp((-dtR * 1000) / chaseMs);
+      const snap = !it.rInit || dtR > MO.snapAfterSec;
+      const alpha = snap ? 1 : 1 - Math.exp((-dtR * 1000) / chaseMs);
+      // the body is aimed the whole chase time ahead (no lag on a steady walk); limbs swing back and forth, so a long chase must not
+      // push them past their turning point
+      const aheadBody = reach + (snap ? 0 : chaseMs / 1000);
+      const aheadLimb = reach + (snap ? 0 : Math.min(chaseMs, MO.chaseAheadMaxMs) / 1000);
       it.rInit = true;
-      for (let k = 0; k < N_KP; k++) {
-        const o = it.arr[k];
-        const j = k * 2;
-        it.rx[j] += (it.filt[j] + it.vel[j] * reach - it.rx[j]) * alpha;
-        it.rx[j + 1] += (it.filt[j + 1] + it.vel[j + 1] * reach - it.rx[j + 1]) * alpha;
-        o.x = it.rx[j];
-        o.y = it.rx[j + 1];
+      const bvx = it.ev[ANC * 2];
+      const bvy = it.ev[ANC * 2 + 1];
+      for (let q = 0; q < N_ALL; q++) {
+        const j = q * 2;
+        let tx: number;
+        let ty: number;
+        if (q < N_KP && !IS_TORSO[q]) {
+          // a limb's velocity = the body's + its own swing: the body part is aimed the full chase time ahead (a walking child's paws must
+          // not trail behind the body), only the swing relative to the body is capped
+          tx = it.filt[j] + bvx * aheadBody + (it.ev[j] - bvx) * aheadLimb;
+          ty = it.filt[j + 1] + bvy * aheadBody + (it.ev[j + 1] - bvy) * aheadLimb;
+        } else {
+          tx = it.filt[j] + it.ev[j] * aheadBody;
+          ty = it.filt[j + 1] + it.ev[j + 1] * aheadBody;
+        }
+        it.rx[j] += (tx - it.rx[j]) * alpha;
+        it.rx[j + 1] += (ty - it.rx[j + 1]) * alpha;
+        if (q < N_KP) {
+          const o = it.arr[q];
+          o.x = it.rx[j];
+          o.y = it.rx[j + 1];
+        }
       }
+      sl.center.x = it.rx[ANC * 2];
+      sl.center.y = it.rx[ANC * 2 + 1];
     }
   }
 

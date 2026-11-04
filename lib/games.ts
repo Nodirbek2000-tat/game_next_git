@@ -1,6 +1,8 @@
 // Single source of truth for the game catalogue, shared by the site pages and the engine.
 // Texts are Uzbek (Latin) only. Star thresholds come from the prototype.
 
+import { LAB_GAMES } from "./lab";
+
 export type BodyPart = "qollar" | "oyoqlar" | "butun-tana";
 export type Difficulty = "oson" | "orta" | "qiyin";
 /** "bogcha" = kindergarten games (3–6 yosh, 2–5 bola birga, skanersiz); "umumiy" = the main catalogue. */
@@ -23,6 +25,8 @@ export interface GameInfo {
   twoPlayers: boolean;
   /** Score thresholds for 1, 2 and 3 stars. */
   stars: [number, number, number];
+  /** sinov (lab) o'yini: tanlov uchun qo'shilgan, ACTIVE_SLUGS ga yozilmaydi */
+  lab?: boolean;
   /** Accent colour for cards and HUD. */
   color: string;
 }
@@ -280,12 +284,13 @@ export const ALL_GAMES: GameInfo[] = [
     stars: [15, 35, 60],
     color: "#ffd23d",
   },
+  ...LAB_GAMES,
 ];
 
 /** Games released on the site right now; the rest come back in a later stage. */
 export const ACTIVE_SLUGS = ["meva-ninja", "baliq-ovi", "mashina", "poyga", "boks", "pufakchalar", "hayvonlar", "baliqcha", "devor-bolalar", "sanaymiz", "bogcha-demo"] as const;
 
-export const GAMES: GameInfo[] = ALL_GAMES.filter((g) => (ACTIVE_SLUGS as readonly string[]).includes(g.slug));
+export const GAMES: GameInfo[] = ALL_GAMES.filter((g) => g.lab || (ACTIVE_SLUGS as readonly string[]).includes(g.slug));
 
 /** The main catalogue (home page, /oyinlar). */
 export const MAIN_GAMES: GameInfo[] = GAMES.filter((g) => g.audience !== "bogcha" && !g.hidden);
