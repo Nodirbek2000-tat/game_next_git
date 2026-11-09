@@ -7,6 +7,7 @@ import { CameraError, classifyCameraError, maxCameraFps, openCamera, setCameraRa
 import { detectEnv, type Env } from "../camera/env";
 import { permissionGuide, problemStatus } from "../camera/guides";
 import { makeConfig, type EngineConfig } from "../config";
+import { assetCacheReady, assetPlan, warmAssets } from "../net/assetCache";
 import { Fx2D, drawSkeleton, drawText } from "../fx/fx2d";
 import { clamp } from "../math";
 import { QualityController } from "../quality/controller";
@@ -188,6 +189,9 @@ export class EngineRuntime implements EngineApi {
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private lostFlag = false;
   private cleanup: (() => void)[] = [];
+  /** the service worker controls this page (or there is none / it took too long): the detectors are created only after this, so their
+   * downloads and the early warm-up share one download per file */
+  private assetsReady: Promise<boolean> = Promise.resolve(false);
   private qualitySetting = "auto";
   private hudState = { score: -1 };
   /** render frame rate cap: 30 on phones / tablets (half the GPU work), 60 elsewhere */
@@ -420,12 +424,28 @@ export class EngineRuntime implements EngineApi {
     }
   }
 
+  /**
+   * The detector's files start downloading now, in parallel with the camera permission and the game module, instead of after them
+   * (through the service worker: the detector's own requests later join these downloads or find the files on the device).
+   */
+  private warmEarly(): void {
+    const ac = new AbortController();
+    this.cleanup.push(() => ac.abort());
+    this.assetsReady = assetCacheReady(1500);
+    const kind = this.crowd && !this.module?.meta.needsHands && this.moveNetMode() === "worker" ? "movenet" : "mediapipe";
+    void (async () => {
+      if (!(await this.assetsReady) || ac.signal.aborted) return;
+      await warmAssets(await assetPlan(kind), ac.signal);
+    })();
+  }
+
   /** Camera permission -> game module + models -> scan. */
   async start(): Promise<void> {
     const ui = useRunUI.getState();
     try {
       if (this.env.viewer) throw new CameraError("viewer");
       const fake = this.fakeWin().__fake;
+      if (!fake) this.warmEarly();
       const cam = await openCamera(snapshotSettings().cameraId || undefined, { crowd: this.crowd });
       if (this.destroyed) {
         stopStream(cam.stream);
@@ -523,6 +543,8 @@ export class EngineRuntime implements EngineApi {
       prog(100, "Tayyor");
       return;
     }
+    await this.assetsReady;
+    if (this.destroyed) return;
     const mode = this.crowd && !this.module.meta.needsHands ? this.moveNetMode() : null;
     if (mode) {
       // fallback chain: MoveNet in a worker (WebGL in OffscreenCanvas) -> MediaPipe. The main-thread MoveNet only when asked for

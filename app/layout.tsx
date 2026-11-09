@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Manrope, Unbounded } from "next/font/google";
 import "./globals.css";
 import { SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site";
+import { AssetWarmup } from "@/components/site/asset-warmup";
 
 const body = Manrope({ variable: "--font-body", subsets: ["latin", "latin-ext"], display: "swap" });
 const display = Unbounded({
@@ -46,7 +47,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className="flex min-h-dvh flex-col">{children}</body>
+      <body className="flex min-h-dvh flex-col">
+        {children}
+        <AssetWarmup />
+      </body>
     </html>
   );
 }

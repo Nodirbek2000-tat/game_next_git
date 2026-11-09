@@ -1,7 +1,7 @@
 // Shrinks the downloaded assets of the games that ship heavy art (Shahar simulyatori = poyga, Baliq ovi = baliq-ovi).
 //
 //   npm run assets:optimize                 everything
-//   npm run assets:optimize -- textures     only textures   (also: models, hdr)
+//   npm run assets:optimize -- textures     only textures   (also: models, hdr, audio)
 //   npm run assets:optimize -- poyga        only one game   (combinable: `-- models baliq-ovi`)
 //
 // SOURCES live in assets-src/ (mirrors public/: assets-src/textures/<game>/..., assets-src/models/<game>/...). They are the
@@ -14,10 +14,14 @@
 //             and vertex colours are quantised, see QUANTIZE_NORMAL_COLOR), embedded
 //             images -> WebP (EXT_texture_webp, max 1024)
 //   hdr       .hdr environment maps: box-filtered down in linear light, re-encoded as RLE RGBE
+//   audio     assets-src/audio/**/*.mp3 (the Bog'cha songs) -> MP3 96 kbit/s stereo, 44.1 kHz (needs ffmpeg on the PATH; skipped
+//             with a warning when it is missing). The songs are background music from a classroom speaker: 192 -> 96 kbit/s is
+//             not audible there and halves the download.
 //
 // Not touched on purpose: geometry is never simplified; node / mesh / material names, extras and morphs are kept.
 
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
@@ -53,7 +57,7 @@ const HDR_WIDTH = { "poyga/osmon.hdr": 1024, "baliq-ovi/osmon_kun.hdr": 512, "ba
 // ---------------------------------------------------------------- args / helpers
 
 const args = process.argv.slice(2);
-const kinds = args.filter((a) => ["textures", "models", "hdr"].includes(a));
+const kinds = args.filter((a) => ["textures", "models", "hdr", "audio"].includes(a));
 const games = args.filter((a) => GAMES.includes(a));
 const wantKind = (k) => kinds.length === 0 || kinds.includes(k);
 const wantGame = (rel) => games.length === 0 || games.includes(rel.split(sep)[0]);
@@ -333,10 +337,36 @@ async function models() {
   }
 }
 
+// ---------------------------------------------------------------- audio
+
+const AUDIO_KBPS = 96;
+
+function audio() {
+  const base = join(SRC, "audio");
+  if (!existsSync(base)) return;
+  if (spawnSync("ffmpeg", ["-version"]).status !== 0) {
+    console.warn("audio: ffmpeg not found on the PATH, skipped");
+    return;
+  }
+  for (const file of walk(base).sort()) {
+    if (!/.mp3$/i.test(file)) continue;
+    const rel = relative(base, file);
+    const out = join(PUB, "audio", rel);
+    mkdirSync(dirname(out), { recursive: true });
+    const r = spawnSync("ffmpeg", ["-y", "-v", "error", "-i", file, "-map_metadata", "-1", "-vn", "-ac", "2", "-ar", "44100", "-codec:a", "libmp3lame", "-b:a", AUDIO_KBPS + "k", out]);
+    if (r.status !== 0) throw new Error(`audio ${rel}: ${r.stderr}`);
+    const before = statSync(file).size;
+    const after = statSync(out).size;
+    tally("audio", before, after);
+    console.log(`mp3  ${rel.padEnd(52)} ${kb(before)} -> ${kb(after)}`);
+  }
+}
+
 // ---------------------------------------------------------------- run
 
 if (wantKind("textures")) await textures();
 if (wantKind("hdr")) await hdr();
 if (wantKind("models")) await models();
+if (wantKind("audio")) audio();
 console.log("\ngroup".padEnd(28) + "files        before         after");
 for (const [g, t] of [...totals].sort()) console.log(g.padEnd(27) + String(t.n).padStart(5) + String(t.before).padStart(14) + String(t.after).padStart(14));
