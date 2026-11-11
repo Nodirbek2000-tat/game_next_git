@@ -8,6 +8,7 @@ import { detectEnv, type Env } from "../camera/env";
 import { permissionGuide, problemStatus } from "../camera/guides";
 import { makeConfig, type EngineConfig } from "../config";
 import { assetCacheReady, assetPlan, warmAssets } from "../net/assetCache";
+import { track } from "../net/stats";
 import { Fx2D, drawSkeleton, drawText } from "../fx/fx2d";
 import { clamp } from "../math";
 import { QualityController } from "../quality/controller";
@@ -1005,6 +1006,8 @@ export class EngineRuntime implements EngineApi {
     }
   }
 
+  /** the game round (sessionId) already reported to the statistics */
+  private trackedSession = -1;
   private strugglingFor = 0;
   /**
    * A weak computer that cannot hold 60 fps even at the cheapest graphics: draw a steady 30 fps (like phones) instead of an
@@ -1201,6 +1204,11 @@ export class EngineRuntime implements EngineApi {
       }
       if (this.countT >= 2.4) {
         this.setState("play");
+        // a round really started (after a pause the countdown runs again: that is not a new round)
+        if (this.trackedSession !== this.sessionId && !this.fakeWin().__fake) {
+          this.trackedSession = this.sessionId;
+          track("play", this.info.slug);
+        }
         this.say("Boshladik!", "", 650);
         this.audioEngine.beep(true);
       }
