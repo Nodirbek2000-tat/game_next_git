@@ -165,7 +165,8 @@ export class PoygaGame {
       /* private mode */
     }
     this.carId = q && q in CARS ? q : stored && stored in CARS ? stored : "boron";
-    if (e.query.get("start") === "1") this.phase = "drive";
+    // straight into the city with the remembered car; the garage only when asked for (?garage=1)
+    if (e.query.get("start") === "1" || e.query.get("garage") !== "1") this.phase = "drive";
     this.best = readBest(SLUG) / 1000;
     this.built = e.quality.level;
     this.lod = LOD[this.built];

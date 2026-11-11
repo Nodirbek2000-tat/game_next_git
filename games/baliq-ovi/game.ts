@@ -176,7 +176,8 @@ export class BaliqRig implements Host {
     const n = engine.playerCount;
     const qm = q.get("mode");
     this.mode = n === 1 ? "yolgiz" : qm === "musobaqa" ? "musobaqa" : "birgalikda";
-    this.phase = n === 2 && qm !== "musobaqa" && qm !== "birgalikda" ? "lobby" : n === 1 && q.get("opts") !== "0" ? "options" : "play";
+    // straight into the game: the options screen (?opts=1) and the two-player lobby (?lobby=1) only when asked for
+    this.phase = n === 2 && q.get("lobby") === "1" && qm !== "musobaqa" && qm !== "birgalikda" ? "lobby" : n === 1 && q.get("opts") === "1" ? "options" : "play";
     this.voiceOffered = VOICE_PLAY_AVAILABLE && n === 1;
     this.voiceWanted = this.voiceOffered && (q.get("voice") === "1" ? true : q.get("voice") === "0" || this.phase !== "options" ? false : loadVoicePref(engine.kids));
     this.voice.lenient = engine.kids;

@@ -7,7 +7,7 @@ import { GAME_LOADERS } from "@/engine/game/registry";
 import { EngineRuntime } from "@/engine/runtime/runtime";
 import { PlayStage } from "@/engine/ui/PlayStage";
 import { PLAY_CSS } from "@/engine/ui/styles";
-import { getGame } from "@/lib/games";
+import { backHref, getGame } from "@/lib/games";
 
 function Notice({ icon, title, text, back = "/oyinlar" }: { icon: string; title: string; text: string; back?: string }) {
   return (
@@ -50,7 +50,7 @@ export default function PlayRoot({ slug }: { slug: string }) {
       players: q.get("players") === "2" ? 2 : 1,
       worker: q.get("worker") !== "0",
       query: q,
-      onExit: () => router.push(info.audience === "bogcha" ? "/bogcha" : "/oyinlar"),
+      onExit: () => router.push(backHref(info)),
     });
     // the runtime is an external system (camera, WebGL, models) created once per slug
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -62,7 +62,7 @@ export default function PlayRoot({ slug }: { slug: string }) {
   }, [slug, info, load, router]);
 
   if (!info) return <Notice icon="🧭" title="O‘yin topilmadi" text="Bunday o‘yin yo‘q. Quyidagi ro‘yxatdan boshqa o‘yinni tanlang." />;
-  if (!load) return <Notice icon={info.icon} title={`${info.title} — tez orada!`} text="Bu o‘yin ustida ishlayapmiz. Tez orada shu yerda o‘ynay olasiz. Hozircha boshqa o‘yinlarni sinab ko‘ring." back={info.audience === "bogcha" ? "/bogcha" : "/oyinlar"} />;
+  if (!load) return <Notice icon={info.icon} title={`${info.title} — tez orada!`} text="Bu o‘yin ustida ishlayapmiz. Tez orada shu yerda o‘ynay olasiz. Hozircha boshqa o‘yinlarni sinab ko‘ring." back={backHref(info)} />;
   if (!runtime) return <div style={{ position: "fixed", inset: 0, background: "#07060f" }} />;
   return <PlayStage runtime={runtime} />;
 }

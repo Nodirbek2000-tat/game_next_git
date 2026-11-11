@@ -9,10 +9,11 @@ import type { EngineRuntime } from "../runtime/runtime";
 import { useRunUI } from "../runtime/runStore";
 import { useSettings } from "../settings/store";
 import type { GameModule } from "../types";
+import { backHref } from "@/lib/games";
 import { PLAY_CSS } from "./styles";
 
 const SCENE_STATES = new Set(["preparing", "countdown", "play", "pause"]);
-const backOf = (runtime: EngineRuntime): string => (runtime.info.audience === "bogcha" ? "/bogcha" : "/oyinlar");
+const backOf = (runtime: EngineRuntime): string => backHref(runtime.info);
 
 /** Dispose geometries, materials and textures below `root` (skips anything flagged `userData.keep`). */
 export function disposeTree(root: THREE.Object3D): void {

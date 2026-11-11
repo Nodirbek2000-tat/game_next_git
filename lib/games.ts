@@ -142,15 +142,18 @@ export const ALL_GAMES: GameInfo[] = [
     title: "Fitnes",
     icon: "💪",
     short: "Mashqlarni kamera o‘zi sanaydi va tekshiradi.",
-    description: "Mashqlar dasturi: takrorlarni kamera sanaydi va to‘g‘ri bajarilishini tekshiradi.",
+    description: "Kunlik mashg‘ulot: takrorlarni kamera sanaydi, to‘g‘ri bajarilishini tekshiradi va kaloriyani hisoblaydi.",
     tip: "Orqaroq turing — butun tanangiz ko‘rinsin",
-    rules: ["Ekrandagi mashqni takrorlang.", "Har bir to‘g‘ri takror ochko beradi.", "Noto‘g‘ri bajarilsa, maslahat chiqadi."],
+    rules: ["Ekrandagi mashqni takrorlang.", "Tana yashil — to‘g‘ri, to‘q sariq — maslahatni o‘qing.", "Natija kaloriya bilan saqlanadi."],
     bodyParts: ["butun-tana"],
     difficulty: "oson",
     kidsFriendly: true,
     audience: "umumiy",
+    // listed only in its own section (/fitnes), not among the games
+    hidden: true,
     twoPlayers: false,
-    stars: [60, 110, 160],
+    // score = kcal of the session
+    stars: [10, 25, 45],
     color: "#34d399",
   },
   {
@@ -288,7 +291,7 @@ export const ALL_GAMES: GameInfo[] = [
 ];
 
 /** Games released on the site right now; the rest come back in a later stage. */
-export const ACTIVE_SLUGS = ["meva-ninja", "baliq-ovi", "mashina", "poyga", "boks", "pufakchalar", "hayvonlar", "baliqcha", "devor-bolalar", "sanaymiz", "bogcha-demo"] as const;
+export const ACTIVE_SLUGS = ["meva-ninja", "baliq-ovi", "mashina", "poyga", "boks", "fitnes", "pufakchalar", "hayvonlar", "baliqcha", "devor-bolalar", "sanaymiz", "bogcha-demo"] as const;
 
 export const GAMES: GameInfo[] = ALL_GAMES.filter((g) => g.lab || (ACTIVE_SLUGS as readonly string[]).includes(g.slug));
 
@@ -298,6 +301,9 @@ export const MAIN_GAMES: GameInfo[] = GAMES.filter((g) => g.audience !== "bogcha
 export const KIDS_GAMES: GameInfo[] = GAMES.filter((g) => g.audience === "bogcha" && !g.hidden);
 
 export const getGame = (slug: string): GameInfo | undefined => GAMES.find((g) => g.slug === slug);
+
+/** where "Orqaga" leads from a game: its own section */
+export const backHref = (g: Pick<GameInfo, "slug" | "audience">): string => (g.slug === "fitnes" ? "/fitnes" : g.audience === "bogcha" ? "/bogcha" : "/oyinlar");
 
 export const BODY_PART_LABEL: Record<BodyPart, string> = {
   qollar: "Qo‘llar",

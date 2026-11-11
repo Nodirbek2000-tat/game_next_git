@@ -75,7 +75,7 @@ test.describe("Baliq ovi", () => {
   test("two players: the mode (Birgalikda / Musobaqa) is chosen in a lobby before the game starts", async ({ page }) => {
     test.setTimeout(300_000);
     const people = [standing({ cx: 0.3, rgb: BLUE }), standing({ cx: 0.7, rgb: RED })];
-    await openGame(page, "players=2&duration=100", people);
+    await openGame(page, "players=2&lobby=1&duration=100", people);
     expect((await snap(page)).phase).toBe("lobby");
     // nothing runs in the lobby: the clock stands still
     const t0 = (await snap(page)).timeLeft;

@@ -188,7 +188,7 @@ test.describe("mashina", () => {
 
   test("menu: left knee cycles, right knee confirms; the chosen mode is used", async ({ page }) => {
     test.setTimeout(240_000);
-    await boot(page, { query: "time=0.45&traffic=0" });
+    await boot(page, { query: "menu=1&time=0.45&traffic=0" });
     await until(page, (s) => s.phase === "menu");
     // the pedals need their 1 s calibration (both legs down) first
     await until(page, (s) => s.legs.ready, 90_000);

@@ -715,7 +715,9 @@ export class EngineRuntime implements EngineApi {
         progress: 0,
         icon: "🙌",
         players: n,
-        title: n === 2 ? "Ikkala o‘yinchi ikki qo‘lini boshidan yuqori ko‘tarsin" : "Ikki qo‘lingizni boshingizdan yuqori ko‘taring",
+        title: this.autoStart
+          ? n === 2 ? "Boshlash uchun ikkalangiz ham qo‘lni tepaga ko‘taring" : "Boshlash uchun ikki qo‘lni tepaga ko‘taring"
+          : n === 2 ? "Ikkala o‘yinchi ikki qo‘lini boshidan yuqori ko‘tarsin" : "Ikki qo‘lingizni boshingizdan yuqori ko‘taring",
         info: "Kamera oldida turing",
         calib: null,
         secondsLeft: this.config.calibration.totalSec,
@@ -741,6 +743,7 @@ export class EngineRuntime implements EngineApi {
     this.toast(this._playerCount === 2 ? "Eng yaqin ikki kishi o‘ynaydi" : "Eng yaqin odam o‘ynaydi");
     this.setState("ready");
     this.prepareReady();
+    if (this.autoStart) this.startGame();
   }
 
   private prepareReady(): void {
@@ -1082,7 +1085,7 @@ export class EngineRuntime implements EngineApi {
       this.scanDoneAt = now;
       this.audioEngine.win();
       useRunUI.getState().patch({ scan: { ...base, progress: 1, icon: "✅", title: this._playerCount === 2 ? "O‘yinchilar tanlandi!" : "O‘yinchi tanlandi!" } });
-      this.setStateAfter(1100, "scanDone");
+      this.setStateAfter(this.autoStart ? 650 : 1100, "scanDone");
       this.scanDone = true;
     } else if (now - this.lastScanUi >= 100) {
       // the scan card is React state: 10 Hz is smooth enough for a progress ring
@@ -1099,8 +1102,19 @@ export class EngineRuntime implements EngineApi {
         this.scanDone = false;
         this.setState("ready");
         this.prepareReady();
+        if (this.autoStart) this.startGame();
       }
     }, ms);
+  }
+
+  /**
+   * Raising both hands (the scan) is the start: the game begins right after it, without a "Boshlash" press. Off with ?autostart=0
+   * and for the scripted test people (window.__fake), whose tests drive the ready menu themselves (?autostart=1 turns it on there).
+   */
+  private get autoStart(): boolean {
+    const q = this.query.get("autostart");
+    if (q === "0") return false;
+    return q === "1" || !this.fakeWin().__fake;
   }
 
   private stepState(now: number, dt: number): void {

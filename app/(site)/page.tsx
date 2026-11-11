@@ -29,7 +29,27 @@ export default function Home() {
           </div>
         </div>
 
-        <ul className="mt-4 grid gap-4 sm:grid-cols-3 sm:gap-5 lg:mt-6">
+        <Link
+          href="/fitnes"
+          data-testid="home-fitnes"
+          className="rise glass mt-4 flex items-center gap-4 rounded-[2rem] p-5 transition-transform hover:-translate-y-0.5 active:scale-[0.98] sm:p-6 lg:mt-6"
+          style={{ animationDelay: "0.14s", boxShadow: "0 22px 50px -26px #34d399", borderColor: "#34d39966" }}
+        >
+          <span aria-hidden="true" className="flex size-16 shrink-0 items-center justify-center rounded-[1.25rem] text-4xl sm:size-20 sm:text-5xl" style={{ background: "linear-gradient(145deg, #34d39959, #34d3991a)" }}>
+            💪
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block font-display text-2xl font-extrabold leading-tight sm:text-3xl">Fitnes</span>
+            <span className="block text-base font-medium text-muted">Bugungi mashg‘ulot · kamera tekshiradi · kaloriya</span>
+          </span>
+          <span aria-hidden="true" className="inline-flex size-12 shrink-0 items-center justify-center rounded-full text-white" style={{ background: "#34d399" }}>
+            <svg viewBox="0 0 24 24" className="size-5" fill="currentColor">
+              <path d="M8 5.5v13l11-6.5z" />
+            </svg>
+          </span>
+        </Link>
+
+        <ul className="mt-4 grid gap-4 sm:grid-cols-3 sm:gap-5">
           {MAIN_GAMES.map((g, i) => (
             <li key={g.slug} className="rise" style={{ animationDelay: `${0.18 + i * 0.07}s` }}>
               <GameCard game={g} />

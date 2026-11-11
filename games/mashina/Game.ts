@@ -243,7 +243,8 @@ export class MashinaGame {
 
     // ---- logic
     this.input = new InputMapper(this.controlConfig(), { seated: this.choice.seated, handbrakeSide: engine.leftHanded ? "L" : "R" });
-    this.picker = q.mode ? null : new Picker(this.choice);
+    // straight into free driving with the saved car; the 4-step menu only when asked for (?menu=1)
+    this.picker = q.mode || engine.query.get("menu") !== "1" ? null : new Picker(this.choice);
     this.peds = new PedSim(this.L);
     this.traffic = new TrafficSim(this.L, {
       lightColor: (n, axis) => lightColor(this.clock, axis, this.L.tiles.get(n.id)!.offset),
