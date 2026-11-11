@@ -39,6 +39,7 @@ const GAMES: GameSpec[] = [
   { slug: "pufakchalar", kids: true, query: "duration=120" },
   { slug: "hayvonlar", kids: true, query: "duration=120" },
   { slug: "baliqcha", kids: true, query: "duration=120" },
+  { slug: "fitnes", kids: false, query: "ex=jack&n=500" },
 ];
 
 const ARGS = [
@@ -183,7 +184,8 @@ async function runOne(browser: Browser, g: GameSpec, throttle: number): Promise<
   const cdp: CDPSession = await ctx.newCDPSession(page);
   if (throttle > 1) await cdp.send("Emulation.setCPUThrottlingRate", { rate: throttle });
   await cdp.send("Performance.enable");
-  await page.goto(`${BASE}/play/${g.slug}?${g.query}${WORKER === "0" ? "&worker=0" : ""}`);
+  // autostart=0: the harness drives the ready menu itself (it measures that screen on its own)
+  await page.goto(`${BASE}/play/${g.slug}?${g.query}&autostart=0${WORKER === "0" ? "&worker=0" : ""}`);
   const waitState = (s: string, timeout = 90_000) => page.waitForFunction((st) => (window as unknown as { __engine?: { state: string } }).__engine?.state === st, s, { timeout });
   let note = "";
   let menu = { fps: 0, p95: 0, gpu: 0 };

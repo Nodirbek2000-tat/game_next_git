@@ -54,7 +54,7 @@ export class QualityController {
   private upWait: number;
   private lastT: number | null = null;
   private readonly maxLevel: number;
-  private readonly target: number;
+  private target: number;
   private readonly down: number;
   private readonly up: number;
   private readonly dpr: number;
@@ -88,6 +88,12 @@ export class QualityController {
   /** Nothing cheaper is left: the lowest level at the lowest scale with the emergency squeeze used up. */
   get atFloor(): boolean {
     return this.level === "low" && this.scale <= MIN_SCALE.low + 1e-6 && this.squeeze >= MAX_SQUEEZE;
+  }
+
+  /** A new frame-rate target (the runtime halves it on a device that cannot hold 60 fps even at the floor). */
+  setTarget(fps: number): void {
+    this.target = fps;
+    this.lowFor = this.highFor = 0;
   }
 
   /** Do not react before `untilSec` (same clock as `sample`). */

@@ -716,7 +716,7 @@ export class EngineRuntime implements EngineApi {
         icon: "🙌",
         players: n,
         title: this.autoStart
-          ? n === 2 ? "Boshlash uchun ikkalangiz ham qo‘lni tepaga ko‘taring" : "Boshlash uchun ikki qo‘lni tepaga ko‘taring"
+          ? n === 2 ? "Ikkalangiz ham ikki qo‘lni tepaga ko‘taring" : "Ikki qo‘lni tepaga ko‘taring"
           : n === 2 ? "Ikkala o‘yinchi ikki qo‘lini boshidan yuqori ko‘tarsin" : "Ikki qo‘lingizni boshingizdan yuqori ko‘taring",
         info: "Kamera oldida turing",
         calib: null,
@@ -977,6 +977,21 @@ export class EngineRuntime implements EngineApi {
     }
   }
 
+  private strugglingFor = 0;
+  /**
+   * A weak computer that cannot hold 60 fps even at the cheapest graphics: draw a steady 30 fps (like phones) instead of an
+   * uneven 35-45 with stutters. Half the frames = half the render work on the main thread, so the game logic and the input keep
+   * their pace. Only for the 3D world games; once switched it stays for the session.
+   */
+  private capIfStruggling(dt: number): void {
+    if (this.renderCap !== 60 || this.crowd || !this.module?.meta.world) return;
+    this.strugglingFor = this.qc.atFloor && this.fpsEma < 46 ? this.strugglingFor + dt : 0;
+    if (this.strugglingFor < 3) return;
+    this.renderCap = 30;
+    this.fpsEma = 30;
+    this.qc.setTarget(30);
+  }
+
   /** Called once per rendered frame by the EngineDriver (inside the R3F canvas). */
   step(now: number, delta: number): void {
     if (this.destroyed) return;
@@ -1009,6 +1024,7 @@ export class EngineRuntime implements EngineApi {
     // 3) quality (only while a game runs)
     if (this._state === "play" || this._state === "countdown") {
       if (this.qc.sample(this.fpsEma, now / 1000)) this.fx.density = this.quality.particles;
+      this.capIfStruggling(dt);
       // detection rate: lowered only when the graphics are already at their cheapest (tracking comes first)
       this.sched.sample(this.fpsEma, this.qc.atFloor, now / 1000);
     }
@@ -1151,7 +1167,7 @@ export class EngineRuntime implements EngineApi {
       if (step !== this.lastCount || prev === 0) {
         this.lastCount = step;
         if (n > 0) {
-          this.say(String(n), "", 700);
+          this.say(String(n), "Tayyorlaning", 700);
           this.audioEngine.beep(false);
         }
       }
