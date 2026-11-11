@@ -43,8 +43,12 @@ export interface OpenedCamera {
  * (see `setCameraRate`). `max: 60` keeps a camera from going beyond what we can analyse.
  */
 export const CAMERA_IDEAL = { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 30, max: 60 } } as const;
-/** Phones / tablets: an even smaller picture (less decoding, less copying, cooler device); the models look at 256 px anyway. */
-export const CAMERA_IDEAL_MOBILE = { width: { ideal: 480 }, height: { ideal: 270 }, frameRate: { ideal: 30, max: 30 } } as const;
+/**
+ * Phones / tablets: a small picture (less decoding, less copying, cooler device; the models look at 256 px anyway) in 4:3, the shape
+ * of a phone camera's sensor: a 16:9 request makes the phone cut the top and bottom (or the sides) off its sensor, which looks like
+ * a zoomed-in camera. 4:3 is the widest view the camera has.
+ */
+export const CAMERA_IDEAL_MOBILE = { width: { ideal: 480 }, height: { ideal: 360 }, frameRate: { ideal: 30, max: 30 } } as const;
 
 /**
  * Crowd (Bog‘cha) games: children stand 3-4 m away in a room, so the picture gets more pixels: 720p. The tiled detection cuts crops out
@@ -99,6 +103,7 @@ export async function openCamera(savedDeviceId?: string, opts?: { crowd?: boolea
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: v, audio: false });
       const track = stream.getVideoTracks()[0];
+      if (track) await widestZoom(track);
       const s = track?.getSettings?.() ?? {};
       return { stream, deviceId: s.deviceId ?? "", label: track?.label ?? "", width: s.width ?? 640, height: s.height ?? 360, fps: s.frameRate ?? 0 };
     } catch (e) {
@@ -108,6 +113,22 @@ export async function openCamera(savedDeviceId?: string, opts?: { crowd?: boolea
     }
   }
   throw last;
+}
+
+/**
+ * A camera that can zoom (some phones, iOS 17+) is set to its smallest zoom: the widest view, so the whole body fits from closer.
+ * Best effort: browsers without zoom control, or that only allow it after an extra permission, keep their default.
+ */
+export async function widestZoom(track: MediaStreamTrack): Promise<void> {
+  try {
+    const caps = (track.getCapabilities?.() ?? {}) as { zoom?: { min?: number } };
+    const min = caps.zoom?.min;
+    const cur = (track.getSettings?.() as { zoom?: number }).zoom;
+    if (typeof min !== "number" || typeof cur !== "number" || cur <= min + 1e-3) return;
+    await track.applyConstraints({ advanced: [{ zoom: min } as MediaTrackConstraintSet] });
+  } catch {
+    /* not supported: keep the default */
+  }
 }
 
 /** Highest frame rate the camera can deliver (0 when the browser does not tell). */

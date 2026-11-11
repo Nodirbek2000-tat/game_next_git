@@ -84,6 +84,9 @@ interface FakeWindow {
 
 type Pending = { res: DetectionResult; captureTs: number; startTs: number; doneTs: number };
 
+/** the camera picture fills the screen, but is zoomed in at most this much over "whole picture visible" (see computeFit) */
+const FIT_MAX_ZOOM = 1.12;
+
 /** MediaPipe pose confidence of crowd games: small bodies far from the camera */
 const CROWD_CONF = 0.35;
 
@@ -397,7 +400,31 @@ export class EngineRuntime implements EngineApi {
     const v = this.video;
     const camW = v?.videoWidth || 1280;
     const camH = v?.videoHeight || 720;
-    this.tracker.setFit(computeFit(this.stage.w, this.stage.h, camW, camH));
+    const fit = computeFit(this.stage.w, this.stage.h, camW, camH, FIT_MAX_ZOOM);
+    this.tracker.setFit(fit);
+    this.layoutVideo(fit);
+  }
+
+  private videoBox = "";
+  /** The full-screen camera picture is placed exactly on the fit rectangle (the picture-in-picture mode keeps its CSS). */
+  private layoutVideo(fit: { ox: number; oy: number; dw: number; dh: number }): void {
+    const v = this.video;
+    if (!v) return;
+    const box = v.dataset.pip === "1" ? "pip" : `${Math.round(fit.ox)},${Math.round(fit.oy)},${Math.round(fit.dw)},${Math.round(fit.dh)}`;
+    if (box === this.videoBox) return;
+    this.videoBox = box;
+    const st = v.style;
+    if (box === "pip") {
+      st.inset = st.left = st.top = st.width = st.height = st.maxWidth = st.maxHeight = "";
+      return;
+    }
+    // (the site's base CSS limits videos to max-width: 100%: the picture may be wider than the screen here)
+    st.maxWidth = st.maxHeight = "none";
+    st.inset = "auto";
+    st.left = `${fit.ox}px`;
+    st.top = `${fit.oy}px`;
+    st.width = `${fit.dw}px`;
+    st.height = `${fit.dh}px`;
   }
 
   private setState(s: RunState): void {
@@ -416,6 +443,7 @@ export class EngineRuntime implements EngineApi {
     const b = this._state === "scan" ? 0.7 : playing ? (this.module?.meta.dim ?? 0.62) : 0.5;
     const pip = world && playing ? "1" : "0";
     v.dataset.pip = pip;
+    this.layoutVideo(this.tracker.fit);
     // the camera is dimmed with a black veil (next sibling of the video), not with a CSS filter on the video
     const veil = v.nextElementSibling as HTMLElement | null;
     if (veil?.classList.contains("hk-camdim")) {

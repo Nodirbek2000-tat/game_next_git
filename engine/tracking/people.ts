@@ -5,9 +5,13 @@ export const SMALL_W = 160;
 export const SMALL_H = 90;
 export const HIST_BINS = 19;
 
-/** "cover" fit of the camera image over the stage. */
-export function computeFit(W: number, H: number, camW: number, camH: number): Fit {
-  const s = Math.max(W / camW, H / camH);
+/**
+ * Fit of the camera image over the stage: "cover" (fills the stage, the overflow is cut off), but zoomed in at most `maxZoom` times
+ * over "contain" (the whole picture visible). On a tall phone screen a full cover would cut most of the picture's sides away and look
+ * like a zoomed camera; with the limit the picture stays wide and the rest of the screen is a dark border.
+ */
+export function computeFit(W: number, H: number, camW: number, camH: number, maxZoom = Infinity): Fit {
+  const s = Math.min(Math.max(W / camW, H / camH), Math.min(W / camW, H / camH) * maxZoom);
   const dw = camW * s;
   const dh = camH * s;
   return { ox: (W - dw) / 2, oy: (H - dh) / 2, dw, dh, W, H };

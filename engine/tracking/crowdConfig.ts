@@ -8,9 +8,9 @@ export const CROWD_CFG = {
     width: 1280,
     height: 720,
     fps: 30,
-    /** phones / tablets: smaller (decode + copy cost, heat) */
+    /** phones / tablets: smaller (decode + copy cost, heat), 4:3 = the whole sensor of a phone camera (16:9 is cut out of it) */
     mobileWidth: 960,
-    mobileHeight: 540,
+    mobileHeight: 720,
   },
 
   tiles: {

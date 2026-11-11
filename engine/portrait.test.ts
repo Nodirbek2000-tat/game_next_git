@@ -35,4 +35,19 @@ describe("portrait (upright phone)", () => {
     expect(p.x).toBeCloseTo(390 * 0.75, 5);
     expect(p.y).toBeCloseTo(390, 5);
   });
+
+  it("a tall phone screen does not zoom the camera in: at most 12 % over the whole picture, the rest is a border", () => {
+    // 3:4 portrait camera on a 390 x 844 screen: cover would show only 58 % of the width
+    const cover = computeFit(390, 844, 360, 480);
+    expect(cover.dw).toBeCloseTo(844 * 0.75, 3);
+    const fit = computeFit(390, 844, 360, 480, 1.12);
+    expect(fit.dw).toBeCloseTo(390 * 1.12, 3);
+    expect(fit.dh).toBeLessThan(844);
+    expect(fit.oy).toBeGreaterThan(0);
+    // same shape as the screen: no border, nothing changes
+    expect(computeFit(1280, 720, 640, 360, 1.12)).toEqual(computeFit(1280, 720, 640, 360));
+  });
+  it("phones ask for a 4:3 picture (the whole sensor)", () => {
+    expect(CAMERA_IDEAL_MOBILE.width.ideal / CAMERA_IDEAL_MOBILE.height.ideal).toBeCloseTo(4 / 3, 3);
+  });
 });
