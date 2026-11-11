@@ -1,17 +1,20 @@
-import { clamp, drawRingProgress, drawSkeleton, drawText, TAU, type EngineApi } from "@/engine";
+import { clamp, drawRingProgress, drawText, TAU, type EngineApi } from "@/engine";
 import { EXERCISES, isExerciseId } from "@/lib/fitness/exercises";
 import { planFor, type PlanStep } from "@/lib/fitness/plan";
 import { loadFitness, recordSession } from "@/lib/fitness/store";
+import { drawBody, SteadyLandmarks } from "./body";
+import { drawCoach } from "./demo";
 import { Session } from "./session";
 
 // Fitnes: a guided workout over the mirrored camera. Minimal screen: the exercise, one big number (reps or seconds), the calories,
-// the body drawn green while the form is right / orange with one short correction when it is not.
+// the body drawn green while the form is right / orange with one short correction when it is not, and an animated coach that
+// shows the movement (big before every exercise, beside the player while it is done).
 //   /play/fitnes            today's plan (lib/fitness/plan.ts), at the user's level
 //   /play/fitnes?ex=squat   one exercise, its default target (?n=20 changes it)
 //   ?rest=5                 shorter rests (tests)
 
-const GOOD = "rgba(70,230,140,.95)";
-const BAD = "rgba(255,170,60,.95)";
+const GOOD = "70,230,140";
+const BAD = "255,170,60";
 const PRAISE = ["Zo‘r!", "Barakalla!", "Davom eting!", "Ajoyib!"];
 
 export class FitnesGame {
@@ -22,7 +25,11 @@ export class FitnesGame {
   private flash = 0;
   private praise = "";
   private praiseT = 0;
-  private lastPhase = "";
+  private readonly steady = new SteadyLandmarks();
+  /** the steadied body of the player this frame, null = nobody seen */
+  private body: ReturnType<SteadyLandmarks["update"]> | null = null;
+  /** the coach's animation clock */
+  private demoT = 0;
 
   constructor(private readonly e: EngineApi) {
     const data = loadFitness();
@@ -50,6 +57,13 @@ export class FitnesGame {
   draw(c: CanvasRenderingContext2D, now: number): void {
     const dt = this.last ? clamp((now - this.last) / 1000, 0, 0.05) : 0;
     this.last = now;
+    this.demoT += dt;
+    const p = this.e.players[0];
+    if (p.present) this.body = this.steady.update(p.lm, dt);
+    else {
+      this.body = null;
+      this.steady.reset();
+    }
     if (this.e.state === "play" && !this.over) this.update(dt);
     this.render(c, now);
   }
@@ -62,7 +76,7 @@ export class FitnesGame {
     const before = s.phase;
     const beforeIndex = s.index;
     const reps = s.reps;
-    const hit = s.update(dt, p.present ? p.lm : null, p.scale, e.stage.h);
+    const hit = s.update(dt, this.body, p.scale, e.stage.h);
     if (hit) {
       if (s.reps > reps) {
         e.audio.coin();
@@ -113,7 +127,6 @@ export class FitnesGame {
     const e = this.e;
     const st = e.stage;
     const s = this.s;
-    const p = e.players[0];
     const W = st.w;
     const H = st.h;
     const u = clamp(Math.min(W, H) / 100, 3.2, 9);
@@ -123,7 +136,7 @@ export class FitnesGame {
       c.fillRect(0, 0, W, H);
       this.flash = Math.max(0, this.flash - 0.02);
     }
-    if (p.present && s.phase === "work") drawSkeleton(c, p.lm, s.reading.good ? GOOD : BAD, Math.max(3, u * 0.9), false);
+    if (this.body && s.phase === "work") drawBody(c, this.body, s.reading.good ? GOOD : BAD, Math.max(4, u * 1.15));
     if (!playing) return;
 
     if (s.phase === "intro" || s.phase === "rest") {
@@ -136,10 +149,11 @@ export class FitnesGame {
     if (!this.single) drawText(c, `${s.index + 1} / ${s.steps.length}`, u * 3 + u * 2, u * 3 + u * 9.5, u * 2.4, "rgba(255,255,255,.8)", "left");
     pill(c, W - u * 3, u * 3, `🔥 ${s.kcal.toFixed(1)} kkal`, u * 3.4, "rgba(10,10,20,.55)", "#ffd27a", "right");
 
-    // the big number: beside the person (who stands in the middle), on a portrait screen above them
-    const R = u * 11;
-    const cx = W > H ? Math.max(R + u * 4, W * 0.13) : W / 2;
-    const cy = W > H ? H * 0.45 : u * 3 + u * 9.5 + R + u * 6;
+    // the big number: beside the person (who stands in the middle); on a tall screen top left, under the title
+    const wide = W > H;
+    const R = wide ? u * 11 : u * 10;
+    const cx = wide ? Math.max(R + u * 4, W * 0.13) : u * 3 + R + u;
+    const cy = wide ? H * 0.45 : u * 3 + u * 12 + R;
     const k = clamp(s.progress / s.step.amount, 0, 1);
     c.fillStyle = "rgba(10,10,20,.5)";
     c.beginPath();
@@ -150,12 +164,23 @@ export class FitnesGame {
     drawText(c, big, cx, cy - u * 0.5, u * 9, "#fff");
     drawText(c, ex.kind === "hold" ? `/ ${s.step.amount} s` : `/ ${s.step.amount}`, cx, cy + u * 5.5, u * 2.8, "rgba(255,255,255,.8)");
 
+    // the coach: on the right (the counter is on the left), above the bottom line on a portrait screen
+    if (W > H) {
+      const size = Math.min(H * 0.48, W * 0.3);
+      drawCoach(c, ex.id, this.demoT, W - size - u * 3, H * 0.47 - size / 2, size, "Shunday qiling");
+    } else {
+      const size = Math.min(W * 0.42, H * 0.24);
+      drawCoach(c, ex.id, this.demoT, W - size - u * 2, u * 3 + u * 12, size, "Shunday qiling");
+    }
+
     // one line at the bottom: the correction, or praise
     this.praiseT = Math.max(0, this.praiseT - 1 / 60);
     const cue = s.reading.cue;
-    if (cue) pill(c, W / 2, H - u * 12, cue, u * 3.2, "rgba(255,150,40,.92)", "#1a0d00", "center");
-    else if (this.praiseT > 0) pill(c, W / 2, H - u * 12, this.praise, u * 3.6, "rgba(70,230,140,.92)", "#002410", "center");
-    else if (s.progress === 0 && s.left > 0) wrap(c, ex.how, W / 2, H - u * 10, Math.min(W * 0.86, u * 120), u * 2.4, "rgba(255,255,255,.9)");
+    // (above the engine's buttons: Orqaga / pause take ~70 px at the bottom)
+    const lineY = H - Math.max(u * 12, 84) - u * 6;
+    if (cue) pill(c, W / 2, lineY, cue, wide ? u * 3.2 : u * 3.6, "rgba(255,150,40,.94)", "#1a0d00", "center");
+    else if (this.praiseT > 0) pill(c, W / 2, lineY, this.praise, u * 3.6, "rgba(70,230,140,.94)", "#002410", "center");
+    else if (s.progress === 0 && s.left > 0) wrap(c, ex.how, W / 2, lineY + u * 3, Math.min(W * 0.86, u * 120), wide ? u * 2.4 : u * 3, "rgba(255,255,255,.92)");
 
     // whole workout progress
     c.fillStyle = "rgba(255,255,255,.18)";
@@ -172,25 +197,28 @@ export class FitnesGame {
     const step = rest ? s.next : s.step;
     if (!step) return;
     const ex = EXERCISES[step.ex];
-    c.fillStyle = "rgba(8,8,18,.72)";
+    c.fillStyle = "rgba(8,8,18,.78)";
     c.fillRect(0, 0, W, H);
-    const cx = W / 2;
-    let y = H * 0.2;
-    drawText(c, rest ? "Dam oling" : this.single ? "Tayyorlaning" : `${s.index + 1}-mashq / ${s.steps.length}`, cx, y, u * 3, rest ? "#7dd3fc" : "rgba(255,255,255,.75)");
-    y += u * 13;
-    drawText(c, ex.icon, cx, y, u * 12, "#fff");
-    y += u * 9;
-    drawText(c, ex.title, cx, y, u * 5.2, "#fff");
+    // the coach shows the next exercise big: on the right of a wide screen, on top of a tall one
+    const wide = W > H;
+    const size = wide ? Math.min(H * 0.7, W * 0.42) : Math.min(W * 0.72, H * 0.4);
+    const cx = wide ? W * 0.29 : W / 2;
+    if (wide) drawCoach(c, ex.id, this.demoT, W * 0.54, (H - size) / 2 - u * 2, size, null);
+    else drawCoach(c, ex.id, this.demoT, (W - size) / 2, u * 6, size, null);
+    let y = wide ? H * 0.22 : u * 6 + size + u * 7;
+    drawText(c, rest ? "Dam oling · keyingisi" : this.single ? "Tayyorlaning" : `${s.index + 1}-mashq / ${s.steps.length}`, cx, y, u * 3, rest ? "#7dd3fc" : "rgba(255,255,255,.75)");
+    y += u * 8;
+    drawText(c, `${ex.icon} ${ex.title}`, cx, y, u * 4.8, "#fff");
+    y += u * 6.5;
+    drawText(c, ex.kind === "hold" ? `${step.amount} soniya ushlab turing` : `${step.amount} marta`, cx, y, u * 3.4, "#46e68c");
     y += u * 6;
-    drawText(c, ex.kind === "hold" ? `${step.amount} soniya ushlab turing` : `${step.amount} marta`, cx, y, u * 3.2, "#46e68c");
-    y += u * 5.5;
-    wrap(c, ex.how, cx, y, Math.min(W * 0.86, u * 120), u * 2.5, "rgba(255,255,255,.85)");
+    wrap(c, ex.how, cx, y, wide ? W * 0.44 : Math.min(W * 0.88, u * 120), wide ? u * 2.5 : u * 3.2, "rgba(255,255,255,.88)");
     // countdown ring
     const total = rest ? s.rest : 4;
-    const ry = H - u * 14;
+    const ry = wide ? H * 0.74 : H - Math.max(u * 12, 84) - u * 12;
     drawRingProgress(c, cx, ry, u * 6, clamp(1 - s.left / Math.max(0.1, total), 0, 1), rest ? "#7dd3fc" : "#46e68c");
     drawText(c, `${Math.max(0, Math.ceil(s.left))}`, cx, ry + u * 1.8, u * 5, "#fff");
-    if (rest) drawText(c, `🔥 ${s.kcal.toFixed(1)} kkal`, cx, H - u * 4, u * 2.6, "#ffd27a");
+    if (rest) drawText(c, `🔥 ${s.kcal.toFixed(1)} kkal`, cx, ry + u * 10, u * 2.6, "#ffd27a");
   }
 }
 
