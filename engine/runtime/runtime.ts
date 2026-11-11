@@ -3,7 +3,7 @@
 import type { GameInfo } from "@/lib/games";
 import { AudioEngine } from "../audio/audio";
 import { CalibrationAnalyzer } from "../calibration/calibration";
-import { CameraError, classifyCameraError, maxCameraFps, openCamera, setCameraRate, stopStream } from "../camera/camera";
+import { CameraError, classifyCameraError, maxCameraFps, openCamera, setCameraRate, stopStream, zoomLabel } from "../camera/camera";
 import { detectEnv, type Env } from "../camera/env";
 import { permissionGuide, problemStatus } from "../camera/guides";
 import { makeConfig, type EngineConfig } from "../config";
@@ -12,7 +12,7 @@ import { track } from "../net/stats";
 import { Fx2D, drawSkeleton, drawText } from "../fx/fx2d";
 import { clamp } from "../math";
 import { QualityController } from "../quality/controller";
-import { detectDevice, resolveInitialLevel, resolvePoseModel, type DeviceProfile } from "../quality/gpu";
+import { detectDevice, isMobileDevice, resolveInitialLevel, resolvePoseModel, type DeviceProfile } from "../quality/gpu";
 import { lowerLevel, readLevelCap, writeLevelCap } from "../quality/levelCap";
 import { readBest, snapshotSettings, useSettings, writeBest } from "../settings/store";
 import { Detector, type DetectOptions, type Delegate } from "../tracking/detector";
@@ -85,8 +85,11 @@ interface FakeWindow {
 
 type Pending = { res: DetectionResult; captureTs: number; startTs: number; doneTs: number };
 
-/** the camera picture fills the screen, but is zoomed in at most this much over "whole picture visible" (see computeFit) */
-const FIT_MAX_ZOOM = 1.12;
+/**
+ * The camera picture fills the screen, but is zoomed in at most this much over "whole picture visible" (see computeFit). Phones: 1 =
+ * never cut anything off (the widest view, a dark border instead); a computer screen and its webcam have about the same shape anyway.
+ */
+const FIT_MAX_ZOOM = isMobileDevice() ? 1 : 1.12;
 
 /** MediaPipe pose confidence of crowd games: small bodies far from the camera */
 const CROWD_CONF = 0.35;
@@ -1531,7 +1534,7 @@ export class EngineRuntime implements EngineApi {
         latPeak: Math.round(this.lat.peak),
         detectCap: this.sched.capFps,
         light: `${Math.round(this.light.mean * 100)}%${this.light.state.active ? ` ↑γ${this.light.state.gamma.toFixed(2)}` : ""}${this.light.tooDark ? " QORONG‘I" : ""}`,
-        camera: `${Math.round(this.camFps)} fps`,
+        camera: `${this.video?.videoWidth ?? 0}×${this.video?.videoHeight ?? 0} · ${Math.round(this.camFps)} fps · zoom ${zoomLabel(this.stream?.getVideoTracks()[0])}`,
         people: this.tracker.people.length,
         crowd: this.crowd ? this.crowdDebug() : "",
         locked: this.crowd ? this.kidTracker.slots.map((k) => `${k.slot + 1}:${k.active ? (k.present ? "✔" : "…") : "—"}`).join("  ") : lock,

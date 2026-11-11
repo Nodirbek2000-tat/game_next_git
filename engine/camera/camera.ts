@@ -93,13 +93,17 @@ export async function openCamera(savedDeviceId?: string, opts?: { crowd?: boolea
   const sized = <T extends { width: unknown; height: unknown }>(i: T): T => (upright ? swapIdealSize(i) : i);
   const ideal = sized(crowd ? (phone ? CAMERA_IDEAL_CROWD_MOBILE : CAMERA_IDEAL_CROWD) : phone ? CAMERA_IDEAL_MOBILE : CAMERA_IDEAL);
   const tries: (MediaTrackConstraints | boolean)[] = [];
-  if (savedDeviceId) tries.push({ deviceId: { exact: savedDeviceId }, ...ideal });
-  tries.push({ ...ideal, facingMode: "user" });
+  // phones: also ask for zoom control (Chrome shows it in the same camera prompt), so the camera can be set to its widest view
+  // (widestZoom); a browser without it ignores the request. The next try asks without it.
+  const zoom = phone ? ({ zoom: true } as MediaTrackConstraints) : {};
+  if (savedDeviceId) tries.push({ deviceId: { exact: savedDeviceId }, ...ideal, ...zoom });
+  tries.push({ ...ideal, facingMode: "user", ...zoom });
+  if (phone) tries.push({ ...ideal, facingMode: "user" });
   // crowd: a camera that refuses the big picture still gets the normal small one before "anything"
   if (crowd) tries.push({ ...sized(phone ? CAMERA_IDEAL_MOBILE : CAMERA_IDEAL), facingMode: "user" });
   tries.push(true);
   let last: unknown;
-  for (const v of tries) {
+  for (const [i, v] of tries.entries()) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: v, audio: false });
       const track = stream.getVideoTracks()[0];
@@ -109,7 +113,9 @@ export async function openCamera(savedDeviceId?: string, opts?: { crowd?: boolea
     } catch (e) {
       last = e;
       const n = (e as { name?: string }).name;
-      if (n === "NotAllowedError" || n === "SecurityError") throw e;
+      // a refusal is final, except for the zoom request: the camera alone may still be allowed
+      const askedZoom = typeof v === "object" && "zoom" in v;
+      if ((n === "NotAllowedError" || n === "SecurityError") && !(askedZoom && i < tries.length - 1)) throw e;
     }
   }
   throw last;
@@ -119,6 +125,19 @@ export async function openCamera(savedDeviceId?: string, opts?: { crowd?: boolea
  * A camera that can zoom (some phones, iOS 17+) is set to its smallest zoom: the widest view, so the whole body fits from closer.
  * Best effort: browsers without zoom control, or that only allow it after an extra permission, keep their default.
  */
+/** "1x (eng kichigi 1x)" for the debug line, "—" when the camera has no zoom control */
+export function zoomLabel(track: MediaStreamTrack | undefined): string {
+  try {
+    const caps = (track?.getCapabilities?.() ?? {}) as { zoom?: { min?: number; max?: number } };
+    const cur = (track?.getSettings?.() as { zoom?: number } | undefined)?.zoom;
+    if (typeof cur !== "number") return "—";
+    const min = caps.zoom?.min;
+    return `${+cur.toFixed(2)}x${typeof min === "number" ? ` (eng kichigi ${+min.toFixed(2)}x)` : ""}`;
+  } catch {
+    return "—";
+  }
+}
+
 export async function widestZoom(track: MediaStreamTrack): Promise<void> {
   try {
     const caps = (track.getCapabilities?.() ?? {}) as { zoom?: { min?: number } };
