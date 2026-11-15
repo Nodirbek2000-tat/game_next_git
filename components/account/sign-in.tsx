@@ -5,14 +5,14 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api, ApiError, useAccount, type Me } from "@/lib/account/store";
 
-type Tab = "telegram" | "login" | "register";
+type Tab = "telegram" | "login";
 
 /** where to go after signing in: only paths of this site */
 function nextPath(raw: string | null): string {
   return raw && raw.startsWith("/") && !raw.startsWith("//") ? raw : "/";
 }
 
-/** /kirish: Telegram (one tap in the bot), login + password, or a new account. */
+/** /kirish: Telegram (one tap in the bot; a new account is made there), or login + password (from the bot, or from the admin for a kindergarten). */
 export function SignIn() {
   const router = useRouter();
   const params = useSearchParams();
@@ -35,13 +35,12 @@ export function SignIn() {
   return (
     <div className="mx-auto max-w-md px-5 pb-14 pt-8 sm:pt-12">
       <h1 className="text-center font-display text-[clamp(2.2rem,7vw,3.2rem)] font-extrabold leading-tight">Kirish</h1>
-      <p className="mt-2 text-center text-base font-medium text-muted">O‘ynash uchun akkauntga kiring — bir marta, keyin eslab qolinadi.</p>
-      <div className="glass mt-6 grid grid-cols-3 gap-1 rounded-2xl p-1" role="tablist">
+      <p className="mt-2 text-center text-base font-medium text-muted">O‘ynash uchun akkauntga kiring — bir marta, keyin eslab qolinadi. Yangi akkaunt Telegram orqali o‘zi ochiladi.</p>
+      <div className="glass mt-6 grid grid-cols-2 gap-1 rounded-2xl p-1" role="tablist">
         {(
           [
             ["telegram", "Telegram"],
-            ["login", "Login"],
-            ["register", "Ro‘yxatdan o‘tish"],
+            ["login", "Login va parol"],
           ] as [Tab, string][]
         ).map(([t, label]) => (
           <button
@@ -59,8 +58,7 @@ export function SignIn() {
       </div>
       <div className="glass mt-4 rounded-[1.75rem] p-5 sm:p-6">
         {tab === "telegram" && <TelegramSignIn onDone={done} />}
-        {tab === "login" && <PasswordForm mode="login" onDone={done} />}
-        {tab === "register" && <PasswordForm mode="register" onDone={done} />}
+        {tab === "login" && <PasswordForm onDone={done} />}
       </div>
     </div>
   );
@@ -123,10 +121,9 @@ function TelegramSignIn({ onDone }: { onDone: (token: string, me: Me) => void })
   );
 }
 
-function PasswordForm({ mode, onDone }: { mode: "login" | "register"; onDone: (token: string, me: Me) => void }) {
+function PasswordForm({ onDone }: { onDone: (token: string, me: Me) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const submit = async (e: React.FormEvent): Promise<void> => {
@@ -134,7 +131,7 @@ function PasswordForm({ mode, onDone }: { mode: "login" | "register"; onDone: (t
     setBusy(true);
     setError("");
     try {
-      const r = await api<{ token: string; me: Me }>(mode === "login" ? "auth/login" : "auth/register", { body: { username, password, name } });
+      const r = await api<{ token: string; me: Me }>("auth/login", { body: { username, password } });
       onDone(r.token, r.me);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Xatolik");
@@ -145,14 +142,13 @@ function PasswordForm({ mode, onDone }: { mode: "login" | "register"; onDone: (t
   const field = "glass h-12 w-full rounded-2xl px-4 text-base font-semibold";
   return (
     <form onSubmit={submit} className="flex flex-col gap-3">
-      {mode === "register" && <input className={field} placeholder="Ismingiz" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" maxLength={120} />}
       <input className={field} placeholder="Login" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required minLength={3} maxLength={30} data-testid="signin-username" />
-      <input className={field} type="password" placeholder="Parol" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={mode === "login" ? "current-password" : "new-password"} required minLength={mode === "register" ? 6 : 1} data-testid="signin-password" />
+      <input className={field} type="password" placeholder="Parol" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required data-testid="signin-password" />
       {error && <p className="text-sm font-bold text-red-500">{error}</p>}
       <Button size="lg" type="submit" disabled={busy} data-testid="signin-submit">
-        {busy ? "…" : mode === "login" ? "Kirish" : "Ro‘yxatdan o‘tish"}
+        {busy ? "…" : "Kirish"}
       </Button>
-      {mode === "login" && <p className="text-center text-sm font-medium text-muted">Login va parolni Telegram botimizdagi «🔑 Login va parol» tugmasi beradi.</p>}
+      <p className="text-center text-sm font-medium text-muted">Login va parolni Telegram botimizdagi «🔑 Login va parol» tugmasi beradi. Bog‘chalarga — admin.</p>
     </form>
   );
 }
