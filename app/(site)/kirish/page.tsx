@@ -1,19 +1,17 @@
 import type { Metadata } from "next";
-import { ComingSoon, PageHeader } from "@/components/site/page-shell";
+import { Suspense } from "react";
+import { SignIn } from "@/components/account/sign-in";
 
 export const metadata: Metadata = {
   title: "Kirish",
-  description: "Kirish tez orada. Mehmon sifatida ro‘yxatdan o‘tmasdan o‘ynash mumkin.",
+  description: "Akkauntga kirish: Telegram orqali yoki login va parol bilan.",
   alternates: { canonical: "/kirish" },
 };
 
 export default function SignInPage() {
   return (
-    <>
-      <PageHeader title="Kirish" />
-      <ComingSoon icon="🔑" title="Tez orada">
-        <p>Ro‘yxatdan o‘tmasdan o‘ynashingiz mumkin.</p>
-      </ComingSoon>
-    </>
+    <Suspense fallback={<div className="min-h-[60dvh]" />}>
+      <SignIn />
+    </Suspense>
   );
 }

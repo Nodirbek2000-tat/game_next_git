@@ -1,19 +1,12 @@
 import type { Metadata } from "next";
-import { ComingSoon, PageHeader } from "@/components/site/page-shell";
+import { ProfilePage } from "@/components/account/profile-page";
 
 export const metadata: Metadata = {
   title: "Profil",
-  description: "Shaxsiy profil — tez orada.",
+  description: "Akkaunt: premium muddati, qurilmalar, chiqish.",
   alternates: { canonical: "/profil" },
 };
 
-export default function ProfilePage() {
-  return (
-    <>
-      <PageHeader title="Profil" />
-      <ComingSoon icon="🧑‍🚀" title="Tez orada">
-        <p>Hozircha mehmon sifatida o‘ynang.</p>
-      </ComingSoon>
-    </>
-  );
+export default function Page() {
+  return <ProfilePage />;
 }

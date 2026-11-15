@@ -1,6 +1,7 @@
 // Anonymous usage counts for the owner's Telegram bot: a visit (once per browser session) and every started game round.
-// What is sent: a random visitor id made here (localStorage "harakat.vid"), the event type and the game slug. Nothing else: no
-// name, no account, never anything from the camera. Production builds only; a failed send is simply dropped.
+// What is sent: a random visitor id made here (localStorage "harakat.vid"), the event type and the game slug, and the account's
+// token when somebody is signed in (so the admin sees which accounts play). Never anything from the camera. Production builds only;
+// a failed send is simply dropped.
 
 const URL = "/api/stats/event";
 const VID_KEY = "harakat.vid";
@@ -35,12 +36,23 @@ export function track(type: "visit" | "play", slug?: string): void {
   const vid = visitorId();
   if (!vid) return;
   const body = JSON.stringify(slug ? { vid, type, slug } : { vid, type });
+  let token: string | null = null;
   try {
-    if (navigator.sendBeacon?.(URL, new Blob([body], { type: "application/json" }))) return;
+    token = localStorage.getItem("harakat.token");
   } catch {
-    /* fall back to fetch */
+    /* blocked */
   }
-  void fetch(URL, { method: "POST", body, headers: { "Content-Type": "application/json" }, keepalive: true }).catch(() => undefined);
+  // a beacon cannot carry the token: signed in = fetch (keepalive survives leaving the page as well)
+  if (!token) {
+    try {
+      if (navigator.sendBeacon?.(URL, new Blob([body], { type: "application/json" }))) return;
+    } catch {
+      /* fall back to fetch */
+    }
+  }
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  void fetch(URL, { method: "POST", body, headers, keepalive: true }).catch(() => undefined);
 }
 
 /** one visit per browser session (a new tab or coming back later counts again, page changes do not) */

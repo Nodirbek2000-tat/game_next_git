@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { PremiumBadge } from "@/components/account/premium-badge";
 import { KIDS_GAMES } from "@/lib/games";
 
 export const metadata: Metadata = {
@@ -32,9 +33,10 @@ export default function BogchaPage() {
               href={`/play/${g.slug}`}
               prefetch={false}
               data-testid={`kids-${g.slug}`}
-              className="glass flex min-h-56 flex-col items-center justify-center gap-3 rounded-[2.5rem] p-6 text-center transition-transform active:scale-95 sm:min-h-72"
+              className="glass relative flex min-h-56 flex-col items-center justify-center gap-3 rounded-[2.5rem] p-6 text-center transition-transform active:scale-95 sm:min-h-72"
               style={{ boxShadow: `0 22px 50px -24px ${g.color}`, borderColor: g.color }}
             >
+              <PremiumBadge slug={g.slug} />
               <span aria-hidden="true" className="text-[clamp(5rem,16vw,9rem)] leading-none">
                 {g.icon}
               </span>

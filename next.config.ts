@@ -23,6 +23,12 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  // Local testing only: API_PROXY_URL=http://127.0.0.1:8000 at build time sends /api/* to a local Django. In production nginx
+  // routes /api/ to Django before Next sees it, so the variable stays unset there.
+  async rewrites() {
+    const target = process.env.API_PROXY_URL;
+    return target ? [{ source: "/api/:path*", destination: `${target.replace(/\/$/, "")}/api/:path*` }] : [];
+  },
   turbopack: {
     rules: {
       "*.css": {

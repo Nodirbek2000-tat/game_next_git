@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { PremiumBadge } from "@/components/account/premium-badge";
 import type { GameInfo } from "@/lib/games";
 
 /** One short line per game for the entry screen; falls back to the catalogue text. */
@@ -18,6 +19,7 @@ export function GameCard({ game }: { game: GameInfo }) {
       style={{ ["--c" as string]: game.color }}
     >
       <div aria-hidden="true" className="game-card-glow pointer-events-none absolute inset-x-6 -top-16 h-40 rounded-full blur-3xl" />
+      <PremiumBadge slug={game.slug} />
       <div
         aria-hidden="true"
         className="relative flex size-20 shrink-0 items-center justify-center rounded-[1.5rem] text-5xl transition-transform duration-300 group-hover:-translate-y-1 group-hover:scale-105 sm:size-28 sm:rounded-[1.75rem] sm:text-7xl"
