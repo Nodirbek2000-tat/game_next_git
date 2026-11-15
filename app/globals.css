@@ -166,3 +166,11 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* Telegram Mini App in full screen: keep the page and the game below Telegram's own buttons (Telegram sets these variables) */
+html[data-tg="1"] body {
+  padding-top: calc(var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px));
+}
+html[data-tg="1"] .hk-root {
+  top: calc(var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px)) !important;
+}
