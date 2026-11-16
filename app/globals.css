@@ -174,3 +174,17 @@ html[data-tg="1"] body {
 html[data-tg="1"] .hk-root {
   top: calc(var(--tg-safe-area-inset-top, 0px) + var(--tg-content-safe-area-inset-top, 0px)) !important;
 }
+
+/* headings: heavy and tight, like a modern product page */
+.font-display {
+  letter-spacing: -0.045em;
+  font-feature-settings: "ss01", "cv11";
+}
+h1.font-display {
+  font-weight: 800;
+  line-height: 1.02;
+}
+body {
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+}

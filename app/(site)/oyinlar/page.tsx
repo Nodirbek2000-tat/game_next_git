@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { GameCard } from "@/components/site/game-card";
+import { GameGrid } from "@/components/site/game-grid";
 import { Container, PageHeader } from "@/components/site/page-shell";
 import { MAIN_GAMES } from "@/lib/games";
 
@@ -14,13 +14,7 @@ export default function GamesPage() {
     <>
       <PageHeader title="O‘yinlar" />
       <Container>
-        <ul className="grid gap-4 sm:grid-cols-3 sm:gap-5">
-          {MAIN_GAMES.map((g, i) => (
-            <li key={g.slug} className="rise" style={{ animationDelay: `${i * 0.07}s` }}>
-              <GameCard game={g} />
-            </li>
-          ))}
-        </ul>
+        <GameGrid games={MAIN_GAMES} />
       </Container>
     </>
   );

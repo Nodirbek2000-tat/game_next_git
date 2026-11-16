@@ -1,17 +1,13 @@
 import type { Metadata, Viewport } from "next";
-import { Manrope, Unbounded } from "next/font/google";
+import { Inter } from "next/font/google";
 import "./globals.css";
 import { SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site";
 import { AssetWarmup } from "@/components/site/asset-warmup";
 import { TelegramMiniApp } from "@/components/site/telegram-mini-app";
 
-const body = Manrope({ variable: "--font-body", subsets: ["latin", "latin-ext"], display: "swap" });
-const display = Unbounded({
-  variable: "--font-display-face",
-  subsets: ["latin", "latin-ext"],
-  display: "swap",
-  weight: ["500", "700", "800"],
-});
+// one clean, modern face for everything (headings: heavy and tight, see .font-display in globals.css)
+const body = Inter({ variable: "--font-body", subsets: ["latin", "latin-ext", "cyrillic"], display: "swap" });
+const display = Inter({ variable: "--font-display-face", subsets: ["latin", "latin-ext"], display: "swap", weight: ["600", "700", "800", "900"] });
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { RequireLogin } from "@/components/account/require-login";
 import { FitnessHome } from "@/components/fitness/fitness-home";
 
 export const metadata: Metadata = {
@@ -8,5 +9,9 @@ export const metadata: Metadata = {
 };
 
 export default function FitnesPage() {
-  return <FitnessHome />;
+  return (
+    <RequireLogin>
+      <FitnessHome />
+    </RequireLogin>
+  );
 }

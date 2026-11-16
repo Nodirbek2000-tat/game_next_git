@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { GameCard } from "@/components/site/game-card";
+import { GameGrid } from "@/components/site/game-grid";
 import { HeroScene } from "@/components/site/hero-scene";
 import { MAIN_GAMES } from "@/lib/games";
 
@@ -49,13 +49,9 @@ export default function Home() {
           </span>
         </Link>
 
-        <ul className="mt-4 grid gap-4 sm:grid-cols-3 sm:gap-5">
-          {MAIN_GAMES.map((g, i) => (
-            <li key={g.slug} className="rise" style={{ animationDelay: `${0.18 + i * 0.07}s` }}>
-              <GameCard game={g} />
-            </li>
-          ))}
-        </ul>
+        <div className="mt-4">
+          <GameGrid games={MAIN_GAMES} delay={0.18} />
+        </div>
 
         <div className="rise mt-6 flex justify-center" style={{ animationDelay: "0.4s" }}>
           <Link
