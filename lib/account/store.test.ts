@@ -10,10 +10,12 @@ afterEach(() => {
 });
 
 describe("account store", () => {
-  it("free games for everybody signed in, the rest only with premium; nobody plays signed out", () => {
+  it("free games for everybody (signed in or not), the rest only with premium", () => {
     useAccount.setState({ config: { freeGames: ["meva-ninja"], monthlyPrice: 0, bogchaPhone: "", botUsername: "b" } });
     const { canPlay } = useAccount.getState();
-    expect(canPlay("meva-ninja")).toBe(false);
+    // free games: also without signing in
+    expect(canPlay("meva-ninja")).toBe(true);
+    expect(canPlay("boks")).toBe(false);
     useAccount.getState().signedIn("tok", me(false));
     expect(getToken()).toBe("tok");
     expect(canPlay("meva-ninja")).toBe(true);

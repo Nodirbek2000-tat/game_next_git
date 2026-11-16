@@ -84,7 +84,7 @@ interface AccountState {
   load: () => Promise<void>;
   signedIn: (token: string, me: Me) => void;
   logout: () => Promise<void>;
-  /** may this account play `slug`? */
+  /** may this visitor play `slug`? free games: everybody (also without signing in); the rest: a premium account */
   canPlay: (slug: string) => boolean;
 }
 
@@ -123,8 +123,7 @@ export const useAccount = create<AccountState>((set, get) => ({
   },
   canPlay: (slug) => {
     const { me, config } = get();
-    if (!me) return false;
-    return me.premium || config.freeGames.includes(slug);
+    return config.freeGames.includes(slug) || !!me?.premium;
   },
 }));
 

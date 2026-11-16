@@ -11,7 +11,8 @@ import { botLink, useAccount } from "@/lib/account/store";
 import { backHref, getGame } from "@/lib/games";
 
 /**
- * Production: only a signed-in account plays, and a premium game only with premium (the free games are set in the admin panel).
+ * Production: a free game (set in the admin panel) is open to everybody, also without signing in; a premium game asks to sign in,
+ * then for premium.
  * NEXT_PUBLIC_REQUIRE_LOGIN=0 turns the check off (local tests without the backend); dev builds never check.
  */
 const GATE = process.env.NODE_ENV === "production" && process.env.NEXT_PUBLIC_REQUIRE_LOGIN !== "0";
@@ -47,14 +48,15 @@ export default function PlayRoot({ slug }: { slug: string }) {
   const router = useRouter();
   const [runtime, setRuntime] = useState<EngineRuntime | null>(null);
   const { ready, me, config, load: loadAccount, canPlay } = useAccount();
-  const allowed = !GATE || (ready && !!me && canPlay(slug));
+  const free = config.freeGames.includes(slug);
+  const allowed = !GATE || (ready && canPlay(slug));
 
   useEffect(() => {
     if (GATE) void loadAccount();
   }, [loadAccount]);
   useEffect(() => {
-    if (GATE && ready && !me) router.replace(`/kirish?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
-  }, [ready, me, router]);
+    if (GATE && ready && !me && !free) router.replace(`/kirish?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+  }, [ready, me, free, router]);
 
   useEffect(() => {
     if (!info || !load || !allowed) return;
@@ -80,7 +82,7 @@ export default function PlayRoot({ slug }: { slug: string }) {
 
   if (!info) return <Notice icon="🧭" title="O‘yin topilmadi" text="Bunday o‘yin yo‘q. Quyidagi ro‘yxatdan boshqa o‘yinni tanlang." />;
   if (!load) return <Notice icon={info.icon} title={`${info.title} — tez orada!`} text="Bu o‘yin ustida ishlayapmiz. Tez orada shu yerda o‘ynay olasiz. Hozircha boshqa o‘yinlarni sinab ko‘ring." back={backHref(info)} />;
-  if (GATE && ready && me && !canPlay(slug))
+  if (GATE && ready && me && !free && !canPlay(slug))
     return (
       <Notice icon="💎" title={`${info.title} — Premium o‘yin`} text="Bu o‘yin premium akkauntda ochiladi. Premiumni Telegram botimiz orqali bir necha daqiqada olasiz." back={backHref(info)}>
         <div className="hk-row" style={{ marginTop: 18 }}>

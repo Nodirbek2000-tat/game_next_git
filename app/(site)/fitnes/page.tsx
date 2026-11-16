@@ -10,7 +10,7 @@ export const metadata: Metadata = {
 
 export default function FitnesPage() {
   return (
-    <RequireLogin>
+    <RequireLogin freeSlug="fitnes">
       <FitnessHome />
     </RequireLogin>
   );
