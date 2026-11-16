@@ -147,7 +147,7 @@ export default function HeroCanvas({ onReady }: { onReady?: () => void }) {
 
   const palette = PALETTES[dark ? "dark" : "light"];
   return (
-    <div ref={wrap} className="size-full">
+    <div ref={wrap} className="size-full" style={{ maskImage: "radial-gradient(closest-side, #000 62%, transparent 100%)", WebkitMaskImage: "radial-gradient(closest-side, #000 62%, transparent 100%)" }}>
       <Canvas
         dpr={[1, 1.5]}
         frameloop={visible ? "always" : "never"}

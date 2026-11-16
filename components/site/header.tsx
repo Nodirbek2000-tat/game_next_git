@@ -9,23 +9,8 @@ export function Header() {
       <div className="mx-auto flex max-w-[72rem] items-center gap-2 px-4 py-4 sm:gap-3 sm:px-8">
         <Logo />
         <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
+          {/* Fitnes / Bog‘cha / the account: shown by AccountNav (the sections only to a signed-in account) */}
           <AccountNav />
-          <Link
-            href="/fitnes"
-            data-testid="nav-fitnes"
-            className="glass inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl px-3 text-base font-bold sm:px-4 transition-transform hover:-translate-y-0.5 active:scale-95"
-          >
-            <span aria-hidden="true">💪</span>{" "}
-            <span className="hidden sm:inline">Fitnes</span>
-          </Link>
-          <Link
-            href="/bogcha"
-            data-testid="nav-bogcha"
-            className="glass inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl px-3 text-base font-bold sm:px-4 transition-transform hover:-translate-y-0.5 active:scale-95"
-          >
-            <span aria-hidden="true">🐰</span>{" "}
-            <span className="hidden sm:inline">Bog‘cha</span>
-          </Link>
           {/* phones: settings and theme live on the profile page (the header has no room) */}
           <div className="hidden items-center gap-2 sm:flex">
             <Link
