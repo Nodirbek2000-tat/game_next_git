@@ -13,6 +13,7 @@ export const GAME_LOADERS: Record<string, () => Promise<{ default: GameModule }>
   "poyga": () => import("@/games/poyga"),
   "boks": () => import("@/games/boks"),
   "fitnes": () => import("@/games/fitnes"),
+  "nurli-tor": () => import("@/games/nurli-tor"),
   // Bog‘cha (kids) games are added here by the game authors; the demo is the kit's reference game
   "bogcha-demo": () => import("@/games/bogcha/demo"),
   "baliqcha": () => import("@/games/baliqcha"),

@@ -138,6 +138,22 @@ export const ALL_GAMES: GameInfo[] = [
     color: "#ff5a3c",
   },
   {
+    slug: "nurli-tor",
+    title: "Nurli tor",
+    icon: "✨",
+    short: "Barmoqlar orasida nur — havoda kuy chaling.",
+    description: "Ikki qo‘lda bosh va ko‘rsatkich barmoqni qising: ular orasida nurli tor paydo bo‘ladi. Qo‘llarni uzoqlashtirsangiz past, yaqinlashtirsangiz baland nota chalinadi.",
+    tip: "Kameradan 1 metrcha turing — yelka va ikki qo‘lingiz ko‘rinsin",
+    rules: ["Ikki qo‘lda bosh va ko‘rsatkich barmoqni qising — nur paydo bo‘ladi.", "Qo‘llar uzoq — past ovoz, yaqin — baland ovoz.", "Tepadagi sariq halqa — «Yulduzcha» kuyining keyingi notasi: chalsangiz +10."],
+    bodyParts: ["qollar"],
+    difficulty: "oson",
+    kidsFriendly: true,
+    audience: "umumiy",
+    twoPlayers: false,
+    stars: [60, 140, 240],
+    color: "#22d3ee",
+  },
+  {
     slug: "fitnes",
     title: "Fitnes",
     icon: "💪",
@@ -291,7 +307,7 @@ export const ALL_GAMES: GameInfo[] = [
 ];
 
 /** Games released on the site right now; the rest come back in a later stage. */
-export const ACTIVE_SLUGS = ["meva-ninja", "baliq-ovi", "mashina", "poyga", "boks", "fitnes", "pufakchalar", "hayvonlar", "baliqcha", "devor-bolalar", "sanaymiz", "bogcha-demo"] as const;
+export const ACTIVE_SLUGS = ["meva-ninja", "baliq-ovi", "mashina", "poyga", "boks", "nurli-tor", "fitnes", "pufakchalar", "hayvonlar", "baliqcha", "devor-bolalar", "sanaymiz", "bogcha-demo"] as const;
 
 export const GAMES: GameInfo[] = ALL_GAMES.filter((g) => g.lab || (ACTIVE_SLUGS as readonly string[]).includes(g.slug));
 
