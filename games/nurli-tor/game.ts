@@ -1,38 +1,36 @@
-import { clamp, drawText, TAU, type EngineApi, type HandInfo } from "@/engine";
-import { dist, Guide, ladderPos, NotePicker, NOTES, Pinch, type Pt } from "./logic";
+import { clamp, drawText, TAU, type EngineApi } from "@/engine";
+import { Board, dist, HandTracks, NOTES, type Hand, type Pt, type Str } from "./logic";
 import { StringSynth } from "./sound";
 
-// Nurli tor: a string of light between the two pinched hands. Pull the hands apart = a lower note, bring them together = higher;
-// every new note is plucked, the light rings while the string is held. A melody guide ("Yulduzcha") shows the next note to play.
-//   ?duration=N  seconds (default 90)
+// Nurli tor: strings of light in the air. Pinch thumb + index on both hands and pull = a new string; open the fingers = it stays
+// there. Run a finger across a string = it plays (a short string sounds high, a long one low). Pinch the ends again to move or
+// stretch it; ends brought together = the string is gone. Only the hand model runs (meta.handsOnly): the fastest tracking there is.
+//   ?duration=N  seconds (default: no limit, free play)
 
-const HAND_LINKS = [0, 1, 1, 2, 2, 3, 3, 4, 0, 5, 5, 6, 6, 7, 7, 8, 5, 9, 9, 10, 10, 11, 11, 12, 9, 13, 13, 14, 14, 15, 15, 16, 13, 17, 17, 18, 18, 19, 19, 20, 0, 17];
+// the fingers only (the palm lines are left out)
+const FINGERS = [
+  [1, 2, 3, 4],
+  [5, 6, 7, 8],
+  [9, 10, 11, 12],
+  [13, 14, 15, 16],
+  [17, 18, 19, 20],
+];
 
 export class NurliTorGame {
-  private readonly pinchL = new Pinch();
-  private readonly pinchR = new Pinch();
-  private readonly picker = new NotePicker();
-  private readonly guide = new Guide();
+  private readonly tracks = new HandTracks();
+  private readonly board = new Board();
   private readonly synth: StringSynth;
   private last = 0;
   private time = 0;
   private readonly duration: number;
   private over = false;
-  private note = -1;
-  private pos = 0;
-  /** string vibration amplitude (px), set by a pluck, decays */
-  private amp = 0;
-  private phase = 0;
-  private score = 0;
-  private played = 0;
-  private flash = 0;
+  private placed = 0;
   private hudT = 0;
-  private holdT = 0;
-  private bestRun = 0;
+  private warmed = false;
 
   constructor(private readonly e: EngineApi) {
     const d = Number(e.query.get("duration"));
-    this.duration = d > 0 ? d : 90;
+    this.duration = d > 0 ? d : 0;
     this.synth = new StringSynth(() => e.audio.graph());
   }
 
@@ -41,256 +39,173 @@ export class NurliTorGame {
   }
 
   draw(c: CanvasRenderingContext2D, now: number): void {
+    const e = this.e;
     const dt = this.last ? clamp((now - this.last) / 1000, 0, 0.05) : 0;
     this.last = now;
-    const playing = this.e.state === "play" && !this.over;
-    this.track(dt, playing);
-    if (playing) this.update(dt);
-    else this.synth.holdTone(0, 0);
-    this.render(c, dt);
-  }
-
-  /** pinch points from the hand model (both hands, any state, so the light is seen before the game starts too) */
-  private track(dt: number, playing: boolean): void {
-    const p = this.e.players[0];
-    const h = p.present ? p.hands : { L: null, R: null };
-    const mid = (hd: HandInfo | null): Pt | null => (hd ? { x: (hd.pts[4].x + hd.pts[8].x) / 2, y: (hd.pts[4].y + hd.pts[8].y) / 2 } : null);
-    this.pinchL.update(h.L ? h.L.pinchD : null, mid(h.L), dt);
-    this.pinchR.update(h.R ? h.R.pinchD : null, mid(h.R), dt);
-    void playing;
-  }
-
-  private get active(): boolean {
-    return this.pinchL.on && this.pinchR.on;
-  }
-
-  private handSize(): number {
-    const h = this.e.players[0].hands;
-    const sizes = [h.L?.size, h.R?.size].filter((s): s is number => typeof s === "number" && s > 0);
-    return sizes.length ? sizes.reduce((a, b) => a + b, 0) / sizes.length : 60;
-  }
-
-  private update(dt: number): void {
-    const e = this.e;
-    this.time += dt;
-    this.phase += dt * 38;
-    this.amp *= Math.exp(-dt * 2.6);
-    this.flash = Math.max(0, this.flash - dt * 2);
-    if (this.active) {
-      const len = dist(this.pinchL.at, this.pinchR.at) / this.handSize();
-      this.pos = ladderPos(len);
-      const n = this.picker.pick(this.pos);
-      if (n !== this.note) {
-        const first = this.note < 0;
-        this.note = n;
-        this.synth.pluck(NOTES[n].freq, first ? 0.95 : 0.75);
-        this.amp = Math.max(this.amp, first ? 26 : 18);
-        this.played++;
-        this.score += 1;
-        const m = this.midpoint();
-        e.fx.burst(m.x, m.y, 10, `hsl(${NOTES[n].hue},100%,70%)`, [60, 220], [2, 4], [0.3, 0.6]);
+    const W = e.stage.w;
+    const H = e.stage.h;
+    const ref = Math.min(W, H);
+    this.tracks.update(e.hands, e.handsAt, now);
+    const playing = e.state === "play" && !this.over;
+    if (playing) {
+      if (!this.warmed) {
+        this.warmed = true;
+        this.synth.warm(NOTES.map((n) => n.freq));
       }
-      this.synth.holdTone(NOTES[this.note].freq, 1);
-      this.holdT += dt;
-      this.bestRun = Math.max(this.bestRun, this.guide.hits);
-    } else {
-      if (this.note >= 0) this.synth.holdTone(NOTES[this.note].freq, 0);
-      this.note = -1;
-      this.picker.reset();
+      this.time += dt;
+      for (const ev of this.board.update(this.tracks.hands, ref, W, H, now)) {
+        const s = ev.s;
+        const n = NOTES[s.note];
+        if (ev.type === "pluck") {
+          this.synth.pluck(s.id, n.freq, ev.vel);
+          e.fx.burst(ev.at.x, ev.at.y, 6, `hsl(${n.hue},100%,72%)`, [40, 160], [2, 3.5], [0.2, 0.45]);
+        } else if (ev.type === "tune") this.synth.tick(s.id, n.freq);
+        else if (ev.type === "place") {
+          this.placed++;
+          this.synth.pluck(s.id, n.freq, 0.55);
+          s.amp = Math.max(s.amp, ref * 0.02);
+        } else if (ev.type === "remove") {
+          this.synth.mute(s.id);
+          const m = mid(s.a, s.b);
+          e.fx.burst(m.x, m.y, 14, `hsl(${n.hue},100%,70%)`, [60, 240], [2, 4], [0.3, 0.6]);
+        }
+      }
+      this.hudT -= dt;
+      if (this.hudT <= 0) {
+        this.hudT = 0.2;
+        const left = this.duration ? Math.max(0, Math.ceil(this.duration - this.time)) : null;
+        e.hud.set({ title: "✨ Nurli tor", score: this.board.plucks, combo: null, lives: null, time: left, timeLabel: "Vaqt", bar: this.duration ? clamp(1 - this.time / this.duration, 0, 1) : undefined });
+      }
+      if (this.duration && this.time >= this.duration) {
+        this.over = true;
+        e.finish({
+          score: this.board.plucks,
+          lines: [
+            ["Chalingan notalar", this.board.plucks],
+            ["Tortilgan torlar", this.placed],
+          ],
+        });
+      }
     }
-    if (this.guide.update(this.note, dt)) {
-      this.score += 10;
-      this.flash = 1;
-      e.audio.coin();
-      const m = this.midpoint();
-      e.fx.popup("+10", m.x, m.y - 40, "#ffe066", 34);
-    }
-    this.hudT -= dt;
-    if (this.hudT <= 0) {
-      this.hudT = 0.15;
-      e.hud.set({ title: "✨ Nurli tor", score: this.score, combo: null, lives: null, time: Math.max(0, Math.ceil(this.duration - this.time)), timeLabel: "Vaqt", bar: clamp(1 - this.time / this.duration, 0, 1) });
-    }
-    if (this.time >= this.duration) {
-      this.over = true;
-      this.synth.holdTone(0, 0);
-      e.finish({
-        score: this.score,
-        lines: [
-          ["Chalingan notalar", this.played],
-          ["Kuy notalari (Yulduzcha)", this.guide.hits],
-          ["Tor ushlangan vaqt", `${Math.round(this.holdT)} s`],
-        ],
-      });
-    }
-  }
-
-  private midpoint(): Pt {
-    return { x: (this.pinchL.at.x + this.pinchR.at.x) / 2, y: (this.pinchL.at.y + this.pinchR.at.y) / 2 };
+    for (const s of this.board.strings) s.amp *= Math.exp(-dt * 2.4);
+    this.render(c, now, W, H, ref, playing);
   }
 
   // ------------------------------------------------------------------------------------------- drawing
 
-  private render(c: CanvasRenderingContext2D, dt: number): void {
-    const e = this.e;
-    const st = e.stage;
-    const W = st.w;
-    const H = st.h;
-    const u = clamp(Math.min(W, H) / 100, 3.2, 9);
-    const p = e.players[0];
-    if (!(e.state === "play" && !this.over)) this.phase += dt * 38;
-
-    if (this.flash > 0) {
-      c.fillStyle = `rgba(255,224,102,${this.flash * 0.12})`;
-      c.fillRect(0, 0, W, H);
+  private render(c: CanvasRenderingContext2D, now: number, W: number, H: number, ref: number, playing: boolean): void {
+    const u = clamp(ref / 100, 3.2, 9);
+    const b = this.board;
+    c.save();
+    c.lineCap = "round";
+    c.lineJoin = "round";
+    c.globalCompositeOperation = "lighter";
+    for (const s of b.strings) this.drawString(c, s, now, u, b.held(s));
+    if (b.draft) this.drawString(c, b.draft.s, now, u, true);
+    c.restore();
+    for (const h of this.tracks.hands) this.drawFingers(c, h, u);
+    // the note of a string being pulled / moved
+    const shown = b.draft?.s ?? b.strings.find((s) => b.held(s));
+    if (shown) {
+      const m = mid(shown.a, shown.b);
+      drawText(c, NOTES[shown.note].name, m.x, m.y + u * 9, u * 6, `hsl(${NOTES[shown.note].hue},100%,82%)`);
     }
-    // the hands, faint
-    if (p.present) for (const hd of [p.hands.L, p.hands.R]) if (hd) this.drawHand(c, hd, u);
-
-    const hue = this.note >= 0 ? NOTES[this.note].hue : 190;
-    if (this.active) this.drawString(c, hue, u);
-    for (const pin of [this.pinchL, this.pinchR]) if (pin.on) this.orb(c, pin.at, hue, u * (this.active ? 2.4 : 1.8));
-
-    // the note
-    if (this.active && this.note >= 0) {
-      const m = this.midpoint();
-      // below the string: the notes ladder and the melody line are above it
-      drawText(c, NOTES[this.note].name, m.x, m.y + u * 11, u * 7, `hsl(${hue},100%,80%)`);
-    }
-    this.drawLadder(c, W, u);
-
-    const playing = e.state === "play";
-    if (playing && !this.active) {
-      const one = this.pinchL.on || this.pinchR.on;
-      const text = one ? "Ikkinchi qo‘lda ham barmoqlarni qising" : "Ikki qo‘lda bosh va ko‘rsatkich barmoqni qising — nur paydo bo‘ladi";
-      pillText(c, text, W / 2, H - Math.max(u * 12, 84) - u * 6, u * 3, "rgba(10,10,24,.72)", "#fff");
-    } else if (playing && this.time < 12) {
-      pillText(c, "Uzoqlashtiring — past ovoz · yaqinlashtiring — baland", W / 2, H - Math.max(u * 12, 84) - u * 6, u * 2.8, "rgba(10,10,24,.6)", "#cfefff");
-    }
+    if (!playing) return;
+    const pinching = this.tracks.hands.filter((h) => h.pinch.on).length;
+    let hint = "";
+    if (b.draft) hint = "Uzunroq — past ovoz, qisqaroq — baland. Barmoqlarni oching — tor qoladi";
+    else if (b.strings.length === 0) hint = pinching === 1 ? "Ikkinchi qo‘lda ham barmoqlarni qising" : "Ikki qo‘lda bosh va ko‘rsatkich barmoqni qisib torni torting";
+    else if (b.plucks === 0) hint = "Endi barmog‘ingiz bilan torni chertib o‘ting";
+    else if (b.plucks < 12 && this.placed < 3) hint = "Yana tor torting · torni ko‘chirish: uchidan qisib ushlang";
+    if (hint) pillText(c, hint, W / 2, H - Math.max(u * 12, 84) - u * 6, u * 2.8, "rgba(10,10,24,.66)", "#e6f8ff");
   }
 
-  private drawHand(c: CanvasRenderingContext2D, hd: HandInfo, u: number): void {
+  /** the fingers: thin lines and bright tips; a pinch is a glowing orb */
+  private drawFingers(c: CanvasRenderingContext2D, h: Hand, u: number): void {
+    const p = h.pts;
     c.save();
-    c.strokeStyle = "rgba(170,230,255,.35)";
-    c.lineWidth = Math.max(1.5, u * 0.35);
     c.lineCap = "round";
+    c.lineJoin = "round";
+    c.strokeStyle = "rgba(180,235,255,.55)";
+    c.lineWidth = Math.max(1.5, u * 0.4);
     c.beginPath();
-    for (let i = 0; i < HAND_LINKS.length; i += 2) {
-      const a = hd.pts[HAND_LINKS[i]];
-      const b = hd.pts[HAND_LINKS[i + 1]];
-      c.moveTo(a.x, a.y);
-      c.lineTo(b.x, b.y);
+    for (const f of FINGERS) {
+      c.moveTo(p[f[0]].x, p[f[0]].y);
+      for (let i = 1; i < f.length; i++) c.lineTo(p[f[i]].x, p[f[i]].y);
     }
     c.stroke();
-    c.fillStyle = "rgba(220,245,255,.7)";
-    for (const i of [4, 8]) {
-      c.beginPath();
-      c.arc(hd.pts[i].x, hd.pts[i].y, Math.max(2, u * 0.5), 0, TAU);
-      c.fill();
+    c.fillStyle = "rgba(235,250,255,.95)";
+    c.beginPath();
+    for (const i of [4, 8, 12, 16, 20]) {
+      c.moveTo(p[i].x + u * 0.75, p[i].y);
+      c.arc(p[i].x, p[i].y, u * 0.75, 0, TAU);
     }
+    c.fill();
     c.restore();
+    if (h.pinch.on) orb(c, h.at, 190, u * 2);
   }
 
-  /** a standing wave between the two pinch points, drawn as glow + core */
-  private drawString(c: CanvasRenderingContext2D, hue: number, u: number): void {
-    const a = this.pinchL.at;
-    const b = this.pinchR.at;
+  /** a string: a standing wave when plucked, drawn as a wide soft glow + a bright core (no shadow blur: cheap on phones) */
+  private drawString(c: CanvasRenderingContext2D, s: Str, now: number, u: number, held: boolean): void {
+    const a = s.a;
+    const b = s.b;
     const len = dist(a, b);
     if (len < 4) return;
+    const hue = NOTES[s.note].hue;
     const nx = -(b.y - a.y) / len;
     const ny = (b.x - a.x) / len;
-    const N = 48;
-    const amp = this.amp + u * 0.35;
-    const mode = this.note >= 0 ? 1 + (this.note % 3) : 1;
+    const N = s.amp > 0.5 ? 28 : 1;
+    const w = now * (0.05 + s.note * 0.004);
     const path = (): void => {
       c.beginPath();
       for (let i = 0; i <= N; i++) {
         const t = i / N;
-        const off = amp * Math.sin(Math.PI * t * mode) * Math.sin(this.phase + t * 0.6) * Math.sin(Math.PI * t);
+        const off = N > 1 ? s.amp * Math.sin(Math.PI * t) * Math.sin(w) : 0;
         const x = a.x + (b.x - a.x) * t + nx * off;
         const y = a.y + (b.y - a.y) * t + ny * off;
         if (i === 0) c.moveTo(x, y);
         else c.lineTo(x, y);
       }
     };
-    c.save();
-    c.globalCompositeOperation = "lighter";
-    c.lineCap = "round";
-    c.lineJoin = "round";
-    c.shadowColor = `hsl(${hue},100%,60%)`;
-    c.shadowBlur = u * 6;
-    c.strokeStyle = `hsla(${hue},100%,60%,.35)`;
-    c.lineWidth = u * 3.2;
+    const glow = Math.min(1, 0.45 + s.amp / 20 + (held ? 0.25 : 0));
     path();
+    c.strokeStyle = `hsla(${hue},100%,55%,${0.16 * glow})`;
+    c.lineWidth = u * 4.2;
     c.stroke();
-    c.shadowBlur = u * 3;
-    c.strokeStyle = `hsla(${hue},100%,70%,.9)`;
-    c.lineWidth = u * 1.1;
-    path();
+    c.strokeStyle = `hsla(${hue},100%,62%,${0.4 * glow})`;
+    c.lineWidth = u * 1.6;
     c.stroke();
-    c.shadowBlur = 0;
-    c.strokeStyle = "rgba(255,255,255,.95)";
-    c.lineWidth = Math.max(1.5, u * 0.35);
-    path();
+    c.strokeStyle = `hsla(${hue},100%,88%,.95)`;
+    c.lineWidth = Math.max(1.5, u * 0.45);
     c.stroke();
-    c.restore();
-  }
-
-  private orb(c: CanvasRenderingContext2D, p: Pt, hue: number, r: number): void {
-    c.save();
-    c.globalCompositeOperation = "lighter";
-    const g = c.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 2.2);
-    g.addColorStop(0, "rgba(255,255,255,.95)");
-    g.addColorStop(0.25, `hsla(${hue},100%,70%,.8)`);
-    g.addColorStop(1, `hsla(${hue},100%,50%,0)`);
-    c.fillStyle = g;
-    c.beginPath();
-    c.arc(p.x, p.y, r * 2.2, 0, TAU);
-    c.fill();
-    c.restore();
-  }
-
-  /** the notes along the top: the one playing is lit, the next note of the melody pulses */
-  private drawLadder(c: CanvasRenderingContext2D, W: number, u: number): void {
-    const n = NOTES.length;
-    const w = Math.min(W * 0.86, u * 110);
-    const x0 = (W - w) / 2;
-    const y = u * 19;
-    const step = w / (n - 1);
-    const target = this.guide.target;
-    const pulse = 0.5 + 0.5 * Math.sin(this.phase * 0.12);
-    c.save();
-    c.strokeStyle = "rgba(255,255,255,.18)";
-    c.lineWidth = u * 0.5;
-    c.beginPath();
-    c.moveTo(x0, y);
-    c.lineTo(x0 + w, y);
-    c.stroke();
-    for (let i = 0; i < n; i++) {
-      const x = x0 + i * step;
-      const lit = i === this.note;
-      const isTarget = i % 5 === target % 5 && i < 5;
-      const r = u * (lit ? 2.6 : 1.6);
-      if (isTarget && this.e.state === "play") {
-        c.strokeStyle = `rgba(255,224,102,${0.5 + pulse * 0.5})`;
-        c.lineWidth = u * 0.6;
-        c.beginPath();
-        c.arc(x, y, u * (3.4 + pulse), 0, TAU);
-        c.stroke();
-      }
-      c.fillStyle = lit ? `hsl(${NOTES[i].hue},100%,70%)` : "rgba(255,255,255,.45)";
+    for (const p of [a, b]) {
+      c.fillStyle = `hsla(${hue},100%,75%,.9)`;
       c.beginPath();
-      c.arc(x, y, r, 0, TAU);
+      c.arc(p.x, p.y, u * (held ? 1.3 : 0.9), 0, TAU);
       c.fill();
-      drawText(c, NOTES[i].name, x, y + u * 5, u * 2.1, lit ? "#fff" : "rgba(255,255,255,.7)");
     }
-    c.restore();
-    if (this.e.state === "play") drawText(c, `Kuy: «Yulduzcha» · keyingi nota — ${NOTES[target].name}`, W / 2, y + u * 10, u * 2.3, "#ffe066");
   }
+}
+
+const mid = (a: Pt, b: Pt): Pt => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+
+function orb(c: CanvasRenderingContext2D, p: Pt, hue: number, r: number): void {
+  c.save();
+  c.globalCompositeOperation = "lighter";
+  const g = c.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 2);
+  g.addColorStop(0, "rgba(255,255,255,.9)");
+  g.addColorStop(0.3, `hsla(${hue},100%,70%,.6)`);
+  g.addColorStop(1, `hsla(${hue},100%,50%,0)`);
+  c.fillStyle = g;
+  c.beginPath();
+  c.arc(p.x, p.y, r * 2, 0, TAU);
+  c.fill();
+  c.restore();
 }
 
 function pillText(c: CanvasRenderingContext2D, t: string, x: number, y: number, size: number, bg: string, fg: string): void {
   c.save();
-  c.font = `800 ${size}px system-ui, sans-serif`;
+  c.font = `800 ${size}px Inter, system-ui, sans-serif`;
   const w = Math.min(c.canvas.width, c.measureText(t).width + size * 1.6);
   const h = size * 2;
   c.fillStyle = bg;

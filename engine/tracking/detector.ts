@@ -18,6 +18,10 @@ export interface DetectorInfo {
 export interface DetectorOptions {
   poseModel: PoseModelName;
   hands: boolean;
+  /** no pose model at all, only the hands (a finger game): faster; the result's pose is null */
+  handsOnly?: boolean;
+  /** how many hands the hand model follows (default 4) */
+  numHands?: number;
   /** how many bodies the pose model follows (default 4; crowd / Bog‘cha games ask for 5) */
   numPoses?: number;
   /** MediaPipe pose confidence (detection / presence / tracking), default 0.5; crowd games lower it for small bodies */
@@ -203,7 +207,7 @@ class WorkerBackend implements Backend {
       };
       worker.addEventListener("message", onMsg);
       worker.addEventListener("error", onErr);
-      worker.postMessage({ type: "init", origin: location.origin, pose: opts.poseModel, hands: opts.hands, numPoses: opts.numPoses ?? 2, conf: opts.minConf ?? 0.5, delegate: opts.delegate ?? "auto" });
+      worker.postMessage({ type: "init", origin: location.origin, pose: opts.poseModel, hands: opts.hands, handsOnly: !!opts.handsOnly, numHands: opts.numHands ?? 4, numPoses: opts.numPoses ?? 2, conf: opts.minConf ?? 0.5, delegate: opts.delegate ?? "auto" });
     });
   }
 
@@ -359,7 +363,7 @@ class MainBackend implements Backend {
     let hand: Landmarker | null = null;
     if (opts.hands) {
       const handBuf = await fetchWithProgress("/models/hand_landmarker.task", "Qo‘l modeli", 65, 25, opts.onProgress);
-      hand = (await make(vision.HandLandmarker, handBuf, { numHands: 4, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5 }, "hand")) as unknown as Landmarker;
+      hand = (await make(vision.HandLandmarker, handBuf, { numHands: opts.numHands ?? 4, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5 }, "hand")) as unknown as Landmarker;
     }
     opts.onProgress?.(100, "Tayyor");
     return new MainBackend(pose, hand, { where: "main", poseModel: opts.poseModel, delegate, hands: opts.hands }, mkPose);

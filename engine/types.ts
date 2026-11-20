@@ -292,6 +292,10 @@ export interface EngineApi {
   readonly meta: GameMeta;
   readonly config: EngineConfig;
   readonly players: PlayerFrame[];
+  /** every hand of the last detection (stage px), not bound to a player; with `meta.handsOnly` the only tracking there is */
+  readonly hands: readonly HandInfo[];
+  /** capture time (performance.now ms) of the camera frame `hands` was found on */
+  readonly handsAt: number;
   readonly playerCount: 1 | 2;
   /** stage size in CSS px (== R3F canvas size) */
   readonly stage: { w: number; h: number; dpr: number };
@@ -332,6 +336,11 @@ export interface GameMeta {
   maxPlayers: 1 | 2;
   /** needs the HandLandmarker (finger level tracking). Loaded only when true. */
   needsHands: boolean;
+  /**
+   * a finger game: no pose model at all (only the hand model, 2 hands) and no scan — the game starts right away. About twice as
+   * fast per frame. `players[0]` gets no body then; read `api.hands` (every hand seen in the last frame).
+   */
+  handsOnly?: boolean;
   /** requires the legs to be visible (calibration insists on full body) */
   needsLegs: boolean;
   /** true: own 3D world (camera becomes a small picture-in-picture). false: AR overlay over the mirrored camera. */

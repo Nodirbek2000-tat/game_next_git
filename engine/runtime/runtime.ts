@@ -39,6 +39,7 @@ import type {
   GameMeta,
   GameModule,
   GameResult,
+  HandInfo,
   HudApi,
   HudValues,
   PlayerFrame,
@@ -253,6 +254,16 @@ export class EngineRuntime implements EngineApi {
   }
   get players(): PlayerFrame[] {
     return this._players;
+  }
+  get hands(): readonly HandInfo[] {
+    return this.tracker.hands;
+  }
+  get handsAt(): number {
+    return this.tracker.handsAt;
+  }
+  /** a finger game: hand model only, no scan */
+  private get handsOnly(): boolean {
+    return !!this.module?.meta.handsOnly;
   }
   /** Crowd game (2..5 children, no scan / lock, no WebGL canvas). Known from the catalogue before the module is loaded. */
   get crowd(): boolean {
@@ -647,6 +658,8 @@ export class EngineRuntime implements EngineApi {
     this.detector = await Detector.create({
       poseModel,
       hands: this.module?.meta.needsHands ?? false,
+      handsOnly: this.handsOnly,
+      numHands: this.handsOnly ? 2 : undefined,
       preferWorker: this.init.worker !== false,
       // crowd: up to 5 children, small bodies -> lower detection confidence (also kept when the room gets dark, see updateLight)
       numPoses: this.wantedPoses(),
@@ -730,6 +743,12 @@ export class EngineRuntime implements EngineApi {
   private beginScan(): void {
     this.tracker.resetPlayers();
     this._players = this.tracker.players;
+    if (this.handsOnly) {
+      // a finger game: nobody to scan, the hands play as soon as they are seen
+      this.setState("ready");
+      if (this.autoStart) setTimeout(() => !this.destroyed && this._state === "ready" && this.startGame(), 0);
+      return;
+    }
     if (this.crowd) {
       // children cannot do a scan: nobody is locked, the nearest person only drives the menu cursor
       this.kidTracker.reset();

@@ -4,7 +4,8 @@
  * the MediaPipe wasm loader uses importScripts(). Everything is self-hosted (/mediapipe, /models);
  * nothing is loaded from a CDN. Camera frames arrive as ImageBitmaps and never leave the device.
  *
- * Protocol (main -> worker):  {type:'init', origin, pose:'lite'|'full', hands:boolean, numPoses?:number, conf?:number, delegate?:'auto'|'GPU'|'CPU'}
+ * Protocol (main -> worker):  {type:'init', origin, pose:'lite'|'full', hands:boolean, numPoses?:number, conf?:number, delegate?:'auto'|'GPU'|'CPU',
+ *                              handsOnly?:boolean, numHands?:number}   (handsOnly: no pose model at all, only the hands: faster)
  *                             {type:'delegate', to:'CPU'}   (leave the GPU delegate)
  *                             {type:'poses', n}   (how many bodies to follow; fewer = faster)
  *                             {type:'frame', id, bitmap, ts, hands:boolean}
@@ -40,6 +41,8 @@ let fileset = null;
 const delegate = { pose: "GPU", hand: "GPU" };
 let lastTs = 0;
 let NUM_POSES = 4;
+let NUM_HANDS = 4;
+let HANDS_ONLY = false;
 let CONF = 0.5;
 let POSE_BUF = null;
 let BENCH = null;
@@ -176,10 +179,10 @@ async function loadPose(which, prefer) {
   pose = chosen;
 }
 
-async function loadHand() {
+async function loadHand(prefer) {
   if (hand) return;
-  const buf = await fetchBuffer(ORIGIN + "/models/hand_landmarker.task", "Qo‘l modeli", 65, 25);
-  hand = await create(Vision.HandLandmarker, buf, { numHands: 4, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5 }, "hand", delegate.pose);
+  const buf = await fetchBuffer(ORIGIN + "/models/hand_landmarker.task", "Qo‘l modeli", HANDS_ONLY ? 15 : 65, HANDS_ONLY ? 75 : 25);
+  hand = await create(Vision.HandLandmarker, buf, { numHands: NUM_HANDS, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5 }, "hand", prefer || delegate.pose);
 }
 
 function plain(res, withWorld) {
@@ -225,13 +228,27 @@ self.onmessage = async (e) => {
       // eslint-disable-next-line no-undef
       fileset = await Vision.FilesetResolver.forVisionTasks(ORIGIN + "/mediapipe");
       post({ type: "progress", label: "Dvigatel", pct: 15 });
-      await loadPose(m.pose, m.delegate === "GPU" || m.delegate === "CPU" ? m.delegate : "auto");
-      if (m.hands) await loadHand();
+      HANDS_ONLY = !!m.handsOnly;
+      NUM_HANDS = Math.max(1, Math.min(4, m.numHands | 0 || 4));
+      if (HANDS_ONLY) {
+        // no pose model: only the hands (a game played with the fingers), half the work per frame
+        await loadHand(m.delegate === "GPU" || m.delegate === "CPU" ? m.delegate : "GPU");
+        delegate.pose = delegate.hand;
+      } else {
+        await loadPose(m.pose, m.delegate === "GPU" || m.delegate === "CPU" ? m.delegate : "auto");
+        if (m.hands) await loadHand();
+      }
       post({ type: "progress", label: "Tayyor", pct: 100 });
       post({ type: "ready", delegate, bench: BENCH });
     } else if (m.type === "delegate") {
       // the GPU delegate turned out slow (the GPU is busy drawing): continue on the CPU
-      if (m.to === "CPU" && delegate.pose !== "CPU") {
+      if (m.to === "CPU" && HANDS_ONLY && delegate.hand !== "CPU") {
+        try { if (hand) hand.close(); } catch (err) { /* ignore */ }
+        hand = null;
+        await loadHand("CPU");
+        delegate.pose = delegate.hand;
+        post({ type: "delegate", pose: delegate.pose });
+      } else if (m.to === "CPU" && !HANDS_ONLY && delegate.pose !== "CPU") {
         const want = TILES_WANT;
         closeTiles();
         post({ type: "tilesReady", n: 0 });
@@ -258,7 +275,7 @@ self.onmessage = async (e) => {
       lastTs = ts;
       let p = null;
       let h = null;
-      try { p = plain(pose.detectForVideo(m.bitmap, ts), true); } catch (err) { /* keep going */ }
+      if (pose) { try { p = plain(pose.detectForVideo(m.bitmap, ts), true); } catch (err) { /* keep going */ } }
       if (m.hands && hand) { try { h = plain(hand.detectForVideo(m.bitmap, ts)); } catch (err) { /* keep going */ } }
       try { m.bitmap.close(); } catch (err) { /* ignore */ }
       post({ type: "result", id: m.id, pose: p, hand: h, ms: performance.now() - t0 });

@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import type { GameModule, SceneProps } from "@/engine";
 import { NurliTorGame } from "./game";
 
-/** Nurli tor: a string of light between the pinched fingers of both hands; its length plays the notes. */
+/** Nurli tor: strings of light pulled out between the pinched fingers and left in the air; a finger crossing one plays it. */
 function NurliTorScene({ engine }: SceneProps): null {
   useEffect(() => {
     const g = new NurliTorGame(engine);
@@ -16,7 +16,7 @@ function NurliTorScene({ engine }: SceneProps): null {
 }
 
 const game: GameModule = {
-  meta: { slug: "nurli-tor", maxPlayers: 1, needsHands: true, needsLegs: false, world: false, dim: 0.42 },
+  meta: { slug: "nurli-tor", maxPlayers: 1, needsHands: true, handsOnly: true, needsLegs: false, world: false, dim: 0.4 },
   Scene: NurliTorScene,
 };
 export default game;

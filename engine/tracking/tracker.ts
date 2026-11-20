@@ -57,6 +57,10 @@ export class Tracker {
   players: PlayerFrame[] = [];
   people: Person[] = [];
   others: Person[] = [];
+  /** every hand of the last frame (stage px), not bound to a player */
+  hands: HandInfo[] = [];
+  /** capture time of that frame */
+  handsAt = 0;
   readonly lock: PlayerLock;
   fit: Fit = { ox: 0, oy: 0, dw: 1, dh: 1, W: 1, H: 1 };
   small: SmallFrame | null = null;
@@ -138,6 +142,8 @@ export class Tracker {
         hands.push(handInfo(pts));
       }
     }
+    this.hands = hands;
+    this.handsAt = cap;
     const used = new Set<number>();
     this.players.forEach((pf, i) => this.updatePlayer(pf, this.internals[i], assigned[i], hands, used, now, cap, dt));
     this.others = this.people.filter((p) => !assigned.includes(p));
