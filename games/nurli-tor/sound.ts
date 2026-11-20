@@ -1,4 +1,4 @@
-import type { Voice } from "./instruments";
+import { semiOfName, type Voice } from "./instruments";
 
 // Nurli tor: the sound — a plucked string (guitar, dutor, rubob, harp: see instruments.ts). Karplus–Strong (a noise burst through a delay line with a loss filter),
 // rendered once per note into a buffer and cached, played through a small "guitar body" (resonance filters) and a short room
@@ -95,7 +95,11 @@ export class StringSynth {
   private readonly cache = new Map<string, AudioBuffer>();
   private readonly voices = new Map<number, { src: AudioBufferSourceNode; amp: GainNode }>();
   private out: GainNode | null = null;
+  /** recordings go here: no body filters (the real body is in them), only the room */
+  private clean: GainNode | null = null;
   private ac: AudioContext | null = null;
+  /** the recordings of an instrument, by folder: sorted by pitch; "loading" / "failed" */
+  private readonly sets = new Map<string, { semi: number; buf: AudioBuffer }[] | "loading" | "failed">();
 
   constructor(private readonly graph: () => Graph | null) {}
 
@@ -107,6 +111,7 @@ export class StringSynth {
       this.ac = ac;
       this.cache.clear();
       this.voices.clear();
+      this.sets.clear();
       // the guitar body: a low wooden resonance, a little air, the harsh top taken off
       const out = ac.createGain();
       out.gain.value = 0.85;
@@ -146,6 +151,11 @@ export class StringSynth {
       fb.connect(delay);
       delay.connect(wet);
       wet.connect(g.sfx);
+      const clean = ac.createGain();
+      clean.gain.value = 1;
+      clean.connect(g.sfx);
+      clean.connect(delay);
+      this.clean = clean;
       this.out = out;
     }
     return g;
@@ -163,10 +173,42 @@ export class StringSynth {
     return buf;
   }
 
-  /** render the buffers ahead (one per draw frame), so the first pluck of every note starts at once */
-  warm(notes: readonly { freq: number; v: Voice; inst: string }[]): void {
+  /** load the recordings of an instrument (once; a few small files) */
+  private load(ac: AudioContext, v: Voice): void {
+    const rec = v.samples;
+    if (!rec || this.sets.has(rec.dir)) return;
+    this.sets.set(rec.dir, "loading");
+    Promise.all(
+      rec.notes.map(async (n) => {
+        const res = await fetch(`/sounds/${rec.dir}/${n}.mp3`);
+        if (!res.ok) throw new Error(`${res.status}`);
+        return { semi: semiOfName(n), buf: await ac.decodeAudioData(await res.arrayBuffer()) };
+      }),
+    )
+      .then((list) => {
+        if (this.ac === ac) this.sets.set(rec.dir, list.sort((a, b) => a.semi - b.semi));
+      })
+      .catch((e) => {
+        console.warn("nurli-tor samples:", e);
+        if (this.ac === ac) this.sets.set(rec.dir, "failed");
+      });
+  }
+
+  /** the recording nearest to `freq` and its playback rate (null: none loaded yet, the synthesis plays) */
+  private recording(v: Voice, freq: number): { buf: AudioBuffer; rate: number } | null {
+    const set = v.samples ? this.sets.get(v.samples.dir) : undefined;
+    if (!Array.isArray(set) || set.length === 0) return null;
+    const semi = 12 * Math.log2(freq / 440);
+    let best = set[0];
+    for (const r of set) if (Math.abs(r.semi - semi) < Math.abs(best.semi - semi)) best = r;
+    return { buf: best.buf, rate: Math.pow(2, (semi - best.semi) / 12) };
+  }
+
+  /** load the recordings and render the synthesis ahead (one note per frame); false = no audio yet */
+  warm(notes: readonly { freq: number; v: Voice; inst: string }[]): boolean {
     const g = this.bus();
-    if (!g) return;
+    if (!g) return false;
+    if (notes[0]) this.load(g.ac, notes[0].v);
     let i = 0;
     const step = (): void => {
       if (i >= notes.length || this.ac !== g.ac) return;
@@ -175,6 +217,7 @@ export class StringSynth {
       setTimeout(step, 16);
     };
     step();
+    return true;
   }
 
   /** pluck string `id` at `freq` with the sound `v` of instrument `inst`; `vel` 0..1 (louder and brighter) */
@@ -197,17 +240,21 @@ export class StringSynth {
     }
     const k = Math.max(0.2, Math.min(1, vel));
     const src = ac.createBufferSource();
-    src.buffer = this.buffer(ac, freq, v, inst);
+    const rec = this.recording(v, freq);
+    if (rec) {
+      src.buffer = rec.buf;
+      src.playbackRate.value = rec.rate;
+    } else src.buffer = this.buffer(ac, freq, v, inst);
     // soft plucks are darker, hard ones bright
     const tone = ac.createBiquadFilter();
     tone.type = "lowpass";
-    tone.frequency.value = v.toneLow + k * k * (v.toneHigh - v.toneLow);
+    tone.frequency.value = rec ? 2500 + k * k * 15000 : v.toneLow + k * k * (v.toneHigh - v.toneLow);
     tone.Q.value = 0.6;
     const amp = ac.createGain();
-    amp.gain.value = v.gain * (0.35 + 0.65 * k);
+    amp.gain.value = (rec ? 0.75 : v.gain) * (0.35 + 0.65 * k);
     src.connect(tone);
     tone.connect(amp);
-    amp.connect(this.out);
+    amp.connect(rec && this.clean ? this.clean : this.out);
     src.start(t);
     const voice = { src, amp };
     this.voices.set(id, voice);

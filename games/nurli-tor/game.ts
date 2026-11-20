@@ -116,10 +116,10 @@ export class NurliTorGame {
   /** render the notes of an instrument ahead, a little at a time */
   private warm(inst: Instrument): void {
     if (this.warmed.has(inst.id)) return;
-    this.warmed.add(inst.id);
     const freqs = new Set<number>(inst.layout.map((p) => noteOf(p.semi).freq));
     for (const n of inst.scale) freqs.add(n.freq);
-    this.synth.warm([...freqs].map((freq) => ({ freq, v: inst.voice, inst: inst.id })));
+    // no audio yet (the page was not touched): tried again on the next frame
+    if (this.synth.warm([...freqs].map((freq) => ({ freq, v: inst.voice, inst: inst.id })))) this.warmed.add(inst.id);
   }
 
   private vanish(s: Str): void {

@@ -13,6 +13,13 @@ export function Footer() {
       <Link href="/premium" className="inline-flex min-h-10 items-center font-semibold hover:text-brand">
         Premium
       </Link>
+      <span className="w-full text-center text-xs opacity-70">
+        Nurli tor ovozlari: University of Iowa MIS (gitara), VSCO 2 CE (arfa) —{" "}
+        <a href="https://github.com/nbrosowsky/tonejs-instruments" target="_blank" rel="noopener noreferrer" className="underline hover:text-brand">
+          tonejs-instruments
+        </a>
+        , CC-BY 3.0
+      </span>
     </footer>
   );
 }

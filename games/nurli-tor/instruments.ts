@@ -23,6 +23,21 @@ export interface Voice {
   toneLow: number;
   toneHigh: number;
   gain: number;
+  /** recordings of the real instrument (public/sounds/<dir>/<note>.mp3); the synthesis plays until they are loaded */
+  samples?: { dir: string; notes: string[] };
+}
+
+// recordings: guitar — University of Iowa Musical Instrument Samples, harp — VSCO 2 Community Edition (via tonejs-instruments, CC-BY 3.0)
+const GUITAR_REC = { dir: "nurli-tor/gitara", notes: ["E2", "A2", "D3", "G3", "B3", "E4", "A4", "D5"] };
+const HARP_REC = { dir: "nurli-tor/arfa", notes: ["C3", "E3", "G3", "B3", "D4", "F4", "A4", "C5"] };
+
+const PC: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+
+/** semitones from A4 of a note name like "E2", "As3" / "A#3" */
+export function semiOfName(n: string): number {
+  const m = /^([A-G])(s|#)?(-?\d)$/.exec(n);
+  if (!m) return 0;
+  return 12 * (Number(m[3]) + 1) + PC[m[1]] + (m[2] ? 1 : 0) - 69;
 }
 
 export interface Placed {
@@ -78,7 +93,7 @@ export const INSTRUMENTS: Instrument[] = [
     id: "erkin",
     name: "Erkin",
     icon: "✨",
-    voice: { t60Low: 4.2, t60High: 1.6, pick: 0.18, damp: 0.5, course: 0, toneLow: 1400, toneHigh: 8400, gain: 0.62 },
+    voice: { t60Low: 4.2, t60High: 1.6, pick: 0.18, damp: 0.5, course: 0, toneLow: 1400, toneHigh: 8400, gain: 0.62, samples: GUITAR_REC },
     scale: scaleOf(-17, MINOR_PENTA, 2), // E3 ..
     layout: [],
   },
@@ -86,7 +101,7 @@ export const INSTRUMENTS: Instrument[] = [
     id: "gitara",
     name: "Gitara",
     icon: "🎸",
-    voice: { t60Low: 4.5, t60High: 2, pick: 0.16, damp: 0.5, course: 0, toneLow: 1500, toneHigh: 8000, gain: 0.6 },
+    voice: { t60Low: 4.5, t60High: 2, pick: 0.16, damp: 0.5, course: 0, toneLow: 1500, toneHigh: 8000, gain: 0.6, samples: GUITAR_REC },
     scale: scaleOf(-17, MINOR_PENTA, 2),
     // six strings across the screen, the thick E on top (as a guitar is seen by its player): a stroke down plays a chord
     layout: parallel([-29, -24, -19, -14, -10, -5], 0.14, 0.34, 0.84, 0.34, 0, 0.058),
@@ -117,7 +132,7 @@ export const INSTRUMENTS: Instrument[] = [
     name: "Arfa",
     icon: "🎼",
     // a harp: ten upright strings, long + low on the left, short + high on the right: sweep a hand along them
-    voice: { t60Low: 5.5, t60High: 2.4, pick: 0.45, damp: 0.5, course: 0, toneLow: 1200, toneHigh: 6000, gain: 0.7 },
+    voice: { t60Low: 5.5, t60High: 2.4, pick: 0.45, damp: 0.5, course: 0, toneLow: 1200, toneHigh: 6000, gain: 0.7, samples: HARP_REC },
     scale: scaleOf(-21, MAJOR_PENTA, 2), // C3 ..
     layout: [-21, -19, -17, -14, -12, -9, -7, -5, -2, 0].map((semi, i) => {
       const x = 0.2 + i * 0.065;

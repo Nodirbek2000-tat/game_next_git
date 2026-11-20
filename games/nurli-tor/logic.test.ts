@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { INSTRUMENTS, noteOf } from "./instruments";
+import { INSTRUMENTS, noteOf, semiOfName } from "./instruments";
 import { Board, crossAt, HandTracks, LEN_LONG, LEN_SHORT, noteForLength, Pinch, PINCH_CLOSE, PINCH_OPEN, segDist, type HandSample } from "./logic";
 import { pluckSamples, voiceSamples } from "./sound";
 
@@ -44,6 +44,10 @@ describe("notes", () => {
     expect(NOTES[0].freq).toBeCloseTo(164.81, 1);
     expect(noteOf(0).name).toBe("La");
     expect(noteOf(-9).name).toBe("Do");
+    expect(semiOfName("A4")).toBe(0);
+    expect(semiOfName("E2")).toBe(-29);
+    expect(semiOfName("As3")).toBe(-11);
+    expect(semiOfName("C5")).toBe(3);
     expect(NOTES[NOTES.length - 1].freq).toBeCloseTo(164.81 * 4, 0);
     for (let i = 1; i < NOTES.length; i++) expect(NOTES[i].freq).toBeGreaterThan(NOTES[i - 1].freq);
   });
