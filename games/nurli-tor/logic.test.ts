@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { Board, crossAt, HandTracks, LEN_LONG, LEN_SHORT, noteForLength, NOTES, Pinch, PINCH_CLOSE, PINCH_OPEN, type HandSample } from "./logic";
-import { pluckSamples } from "./sound";
+import { INSTRUMENTS, noteOf } from "./instruments";
+import { Board, crossAt, HandTracks, LEN_LONG, LEN_SHORT, noteForLength, Pinch, PINCH_CLOSE, PINCH_OPEN, segDist, type HandSample } from "./logic";
+import { pluckSamples, voiceSamples } from "./sound";
+
+const FREE = INSTRUMENTS[0];
+const NOTES = FREE.scale;
 
 /** a scripted hand: wrist at (x, y), size 60 px, pinched or open, the index tip optionally somewhere else */
 function hand(x: number, y: number, pinched: boolean, tip?: { x: number; y: number }): HandSample {
@@ -32,12 +36,14 @@ describe("pinch", () => {
 describe("notes", () => {
   it("a long string is low, a short one high (minor pentatonic on E, two octaves)", () => {
     const ref = 1000;
-    expect(noteForLength(ref * LEN_LONG * 1.2, ref)).toBe(0);
-    expect(noteForLength(ref * LEN_SHORT * 0.8, ref)).toBe(NOTES.length - 1);
-    const mid = noteForLength(ref * 0.35, ref);
+    expect(noteForLength(ref * LEN_LONG * 1.2, ref, NOTES.length)).toBe(0);
+    expect(noteForLength(ref * LEN_SHORT * 0.8, ref, NOTES.length)).toBe(NOTES.length - 1);
+    const mid = noteForLength(ref * 0.35, ref, NOTES.length);
     expect(mid).toBeGreaterThan(0);
     expect(mid).toBeLessThan(NOTES.length - 1);
     expect(NOTES[0].freq).toBeCloseTo(164.81, 1);
+    expect(noteOf(0).name).toBe("La");
+    expect(noteOf(-9).name).toBe("Do");
     expect(NOTES[NOTES.length - 1].freq).toBeCloseTo(164.81 * 4, 0);
     for (let i = 1; i < NOTES.length; i++) expect(NOTES[i].freq).toBeGreaterThan(NOTES[i - 1].freq);
   });
@@ -86,7 +92,7 @@ describe("board", () => {
       step: (s) => {
         ms += 33;
         t.update(s, ms, ms);
-        return b.update(t.hands, ref, W, H, ms);
+        return b.update(t.hands, ref, W, H, ms, FREE);
       },
     };
   }
@@ -125,6 +131,44 @@ describe("board", () => {
     expect(b.plucks).toBe(1);
   });
 
+  it("a fingertip resting on a string plays once; it plays again only after it left", () => {
+    const { b, step } = run();
+    step([hand(300, 400, true), hand(700, 400, true)]);
+    step([hand(300, 400, false), hand(700, 400, false)]);
+    const line = b.strings[0].a.y;
+    let n = 0;
+    // slowly down onto the string (no crossing), stay there, leave, come back
+    for (const y of [line - 40, line - 20, line - 5, line - 4, line - 5, line - 4, line - 60, line - 6])
+      n += step([hand(500, y + 80, false, { x: 500, y })]).filter((e) => e.type === "pluck").length;
+    expect(n).toBe(2);
+  });
+
+  it("ready instruments: the guitar has six strings E A D G B E, the notes stay when a string is moved", () => {
+    const b = new Board();
+    const g = INSTRUMENTS.find((i) => i.id === "gitara")!;
+    const strs = b.placeLayout(g, 1000, 600, noteOf);
+    expect(strs.map((s) => s.note.name)).toEqual(["Mi", "La", "Re", "Sol", "Si", "Mi"]);
+    expect(strs[0].note.freq).toBeCloseTo(82.41, 1);
+    expect(strs.every((s) => s.fixed)).toBe(true);
+    expect(b.clear()).toHaveLength(6);
+    expect(b.strings).toHaveLength(0);
+  });
+
+  it("pinching the middle of a string moves the whole string", () => {
+    const { b, step } = run();
+    step([hand(300, 400, true), hand(700, 400, true)]);
+    step([hand(300, 400, false), hand(700, 400, false)]);
+    const s = b.strings[0];
+    const len = Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
+    const mx = (s.a.x + s.b.x) / 2 - 4.5;
+    const my = s.a.y + 73;
+    step([hand(mx, my, true)]);
+    expect(b.held(s)).toBe(true);
+    for (let k = 1; k <= 4; k++) step([hand(mx, my - k * 25, true)]);
+    expect(s.a.y).toBeLessThan(240);
+    expect(Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y)).toBeCloseTo(len, 0);
+  });
+
   it("the ends can be grabbed again: moved, and brought together = removed", () => {
     const { b, step } = run();
     step([hand(300, 400, true), hand(700, 400, true)]);
@@ -147,6 +191,29 @@ describe("board", () => {
     const ev2 = step([hand(480, ay - 100, false), hand(500, by - 100, false)]);
     expect(ev2.some((e) => e.type === "remove")).toBe(true);
     expect(b.strings).toHaveLength(0);
+  });
+});
+
+describe("instrument sounds", () => {
+  it("every instrument rings at its pitch (a double course too) and fades", () => {
+    const rate = 44100;
+    for (const inst of INSTRUMENTS) {
+      const s = voiceSamples(220, rate, inst.voice);
+      const seg = (a: number) => Math.sqrt(s.slice(a, a + 2205).reduce((t, v) => t + v * v, 0) / 2205);
+      expect(seg(0)).toBeGreaterThan(seg(s.length - 3000) * 2);
+      let best = 0;
+      let lag0 = 0;
+      for (let lag = 120; lag < 300; lag++) {
+        let acc = 0;
+        for (let i = 4410; i < 8820; i++) acc += s[i] * s[i + lag];
+        if (acc > best) {
+          best = acc;
+          lag0 = lag;
+        }
+      }
+      expect(Math.abs(lag0 - rate / 220)).toBeLessThan(3);
+    }
+    expect(segDist({ x: 5, y: 3 }, { x: 0, y: 0 }, { x: 10, y: 0 }).d).toBeCloseTo(3, 5);
   });
 });
 

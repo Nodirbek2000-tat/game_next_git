@@ -1007,7 +1007,8 @@ export class EngineRuntime implements EngineApi {
       return;
     }
     if (this.camBoost !== "idle") return;
-    const good = !dark && this.lat.samples > 45 && this.lat.infer < 14 && this.detEma > 24 && this.sched.capFps >= 45 && this.camFps > 0 && this.camFps < 45;
+    // a finger game (hand model only) asks for 60 fps sooner: the camera frame interval is a big part of its delay
+    const good = !dark && this.lat.samples > 45 && this.lat.infer < (this.handsOnly ? 26 : 14) && this.detEma > 24 && this.sched.capFps >= 45 && this.camFps > 0 && this.camFps < 45;
     this.camGoodFor = good ? this.camGoodFor + dtSec : 0;
     if (this.camGoodFor > 3 && maxCameraFps(track) >= 50) {
       this.camBoost = "up";

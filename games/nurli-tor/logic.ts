@@ -3,8 +3,10 @@
 //  * HandTracks: the hands of the hand model keep their identity from frame to frame and are moved forward to "now" by their
 //    speed (the picture the model saw is 30..60 ms old: drawn where the finger IS, not where it was).
 //  * Board: the strings. Pinch thumb + index on both hands = a new string between them; open the fingers = the string stays there
-//    in the air. Pinch near the ends of a string = grab it (move it, stretch it; ends brought together = it is removed).
-//    A fingertip that crosses a string plucks it. Like a real string: SHORT = HIGH note, LONG = LOW note.
+//    in the air. Pinch near an end of a string = grab that end (stretch it; ends brought together = it is removed), pinch on the
+//    string itself = move it. A fingertip that touches or crosses a string plucks it. Like a real string: SHORT = HIGH, LONG = LOW.
+
+import type { Instrument, Note } from "./instruments";
 
 export interface Pt {
   x: number;
@@ -27,34 +29,26 @@ export class Pinch {
 
 // ------------------------------------------------------------------------------------------- notes
 
-export interface Note {
-  /** Uzbek solfège name shown on screen */
-  name: string;
-  freq: number;
-  /** hue for the light (0..360) */
-  hue: number;
-}
-
-// minor pentatonic on E (the guitar's own key) from E3 over two octaves + the top E: every combination sounds good
-const NAMES = ["Mi", "Sol", "La", "Si", "Re"];
-const SEMIS = [0, 3, 5, 7, 10, 12, 15, 17, 19, 22, 24];
-export const NOTES: Note[] = SEMIS.map((s, i) => ({
-  name: NAMES[i % 5],
-  freq: 164.81 * Math.pow(2, s / 12),
-  hue: 210 - (i / (SEMIS.length - 1)) * 210,
-}));
-
 /** string length as a part of the shorter screen side: this long = the lowest note, this short = the highest */
 export const LEN_LONG = 0.95;
 export const LEN_SHORT = 0.12;
 /** shorter than this (part of the screen side) is no string: not placed / removed */
 export const LEN_MIN = 0.07;
 
-/** the note of a string: like a real string the pitch goes with 1 / length (logarithmic ladder), snapped to the scale */
-export function noteForLength(len: number, ref: number): number {
+/** the note (index into a scale of `count` notes) of a string: pitch goes with 1 / length (logarithmic ladder), snapped */
+export function noteForLength(len: number, ref: number, count: number): number {
   const f = Math.max(1e-6, len / Math.max(1, ref));
   const t = Math.log(LEN_LONG / f) / Math.log(LEN_LONG / LEN_SHORT);
-  return Math.round(Math.max(0, Math.min(1, t)) * (NOTES.length - 1));
+  return Math.round(Math.max(0, Math.min(1, t)) * (count - 1));
+}
+
+/** distance of `p` from the segment a–b and the place along it (0..1) */
+export function segDist(p: Pt, a: Pt, b: Pt): { d: number; u: number } {
+  const sx = b.x - a.x;
+  const sy = b.y - a.y;
+  const l2 = sx * sx + sy * sy || 1;
+  const u = Math.max(0, Math.min(1, ((p.x - a.x) * sx + (p.y - a.y) * sy) / l2));
+  return { d: Math.hypot(p.x - a.x - sx * u, p.y - a.y - sy * u), u };
 }
 
 /**
@@ -112,7 +106,7 @@ export const TIPS = [4, 8, 12, 16, 20];
 /** how far ahead (s) a hand is moved at most: the model is 30..60 ms behind, more would overshoot */
 const LEAD_MAX = 0.07;
 /** a hand not seen for this long (ms) is gone */
-const KEEP_MS = 160;
+const KEEP_MS = 250;
 
 export class HandTracks {
   hands: Hand[] = [];
@@ -209,7 +203,11 @@ export interface Str {
   id: number;
   a: Pt;
   b: Pt;
-  note: number;
+  note: Note;
+  /** the instrument whose sound it has */
+  inst: string;
+  /** a string of a ready instrument: its note stays when it is moved or stretched */
+  fixed: boolean;
   /** vibration (px), set by a pluck, decays */
   amp: number;
   /** ms of the last pluck */
@@ -223,13 +221,16 @@ export type BoardEvent =
   | { type: "grab"; s: Str }
   | { type: "pluck"; s: Str; vel: number; at: Pt };
 
-export const MAX_STRINGS = 6;
-/** a string can be plucked again after this long (ms): one finger, one note; five fingers in one stroke are one pluck too */
-const PLUCK_GAP = 85;
+export const MAX_STRINGS = 16;
+/** a string can be plucked again after this long (ms); several fingers in one stroke are one pluck */
+const PLUCK_GAP = 70;
 
 interface Grab {
   s: Str;
-  end: "a" | "b";
+  /** an end, or the whole string ("mid": it moves with the hand; oa / ob = hand to end a / end b) */
+  end: "a" | "b" | "mid";
+  oa: Pt;
+  ob: Pt;
 }
 
 export class Board {
@@ -238,12 +239,38 @@ export class Board {
   draft: { s: Str; ha: number; hb: number } | null = null;
   private grabs = new Map<number, Grab>();
   private wasOn = new Map<number, boolean>();
+  /** fingertip on a string (hand:tip:string): it plays again only after it left the string */
+  private touch = new Map<string, boolean>();
   private nextId = 1;
+  private lastNow = 0;
   plucks = 0;
 
-  /** `ref` = shorter screen side (px), `W`/`H` the screen, `now` ms */
-  update(hands: readonly Hand[], ref: number, W: number, H: number, now: number): BoardEvent[] {
+  /** remove every string */
+  clear(): Str[] {
+    const out = this.strings;
+    this.strings = [];
+    this.draft = null;
+    this.grabs.clear();
+    this.touch.clear();
+    return out;
+  }
+
+  /** the ready strings of an instrument (screen W x H) */
+  placeLayout(inst: Instrument, W: number, H: number, noteOf: (semi: number) => Note): Str[] {
+    const out: Str[] = [];
+    for (const p of inst.layout) {
+      const s: Str = { id: this.nextId++, a: { x: p.ax * W, y: p.ay * H }, b: { x: p.bx * W, y: p.by * H }, note: noteOf(p.semi), inst: inst.id, fixed: true, amp: 0, plucked: 0 };
+      this.strings.push(s);
+      out.push(s);
+    }
+    return out;
+  }
+
+  /** `ref` = shorter screen side (px), `W`/`H` the screen, `now` ms, `inst` = the instrument of new strings */
+  update(hands: readonly Hand[], ref: number, W: number, H: number, now: number, inst: Instrument): BoardEvent[] {
     const ev: BoardEvent[] = [];
+    const dt = this.lastNow ? Math.max(0.004, Math.min(0.1, (now - this.lastNow) / 1000)) : 1 / 60;
+    this.lastNow = now;
     const ids = new Set(hands.map((h) => h.id));
     const byId = new Map(hands.map((h) => [h.id, h]));
 
@@ -253,11 +280,11 @@ export class Board {
       if (was && (!h || !h.pinch.on)) this.release(id, ref, W, H, ev);
       if (!ids.has(id)) this.wasOn.delete(id);
     }
-    // hands that pinch now: grab the nearest end of a string, else wait for the other hand (a new string)
+    // hands that pinch now: grab an end, else the string itself, else wait for the other hand (a new string)
     for (const h of hands) {
       const on = h.pinch.on;
       if (on && !this.wasOn.get(h.id)) {
-        const g = this.nearestEnd(h.at, Math.max(ref * 0.07, h.size * 0.9));
+        const g = this.grabAt(h.at, Math.max(ref * 0.075, h.size * 0.9));
         if (g) {
           this.grabs.set(h.id, g);
           ev.push({ type: "grab", s: g.s });
@@ -270,44 +297,65 @@ export class Board {
       const freeP = hands.filter((h) => h.pinch.on && !this.grabs.has(h.id));
       if (freeP.length >= 2) {
         const [ha, hb] = freeP;
-        const s: Str = { id: this.nextId++, a: { ...ha.at }, b: { ...hb.at }, note: noteForLength(dist(ha.at, hb.at), ref), amp: 0, plucked: 0 };
+        const note = inst.scale[noteForLength(dist(ha.at, hb.at), ref, inst.scale.length)];
+        const s: Str = { id: this.nextId++, a: { ...ha.at }, b: { ...hb.at }, note, inst: inst.id, fixed: false, amp: 0, plucked: 0 };
         this.draft = { s, ha: ha.id, hb: hb.id };
         ev.push({ type: "tune", s });
       }
     }
-    // held ends follow the fingers; the note follows the length
+    // held ends follow the fingers; the note of a free string follows its length
     if (this.draft) {
       const { s } = this.draft;
       const ha = byId.get(this.draft.ha);
       const hb = byId.get(this.draft.hb);
       if (ha) Object.assign(s.a, ha.at);
       if (hb) Object.assign(s.b, hb.at);
-      this.retune(s, ref, ev);
+      this.retune(s, ref, inst, ev);
     }
     for (const [id, g] of this.grabs) {
       const h = byId.get(id);
       if (!h) continue;
-      Object.assign(g.s[g.end], h.at);
-      this.retune(g.s, ref, ev);
+      if (g.end === "mid") {
+        g.s.a.x = h.at.x + g.oa.x;
+        g.s.a.y = h.at.y + g.oa.y;
+        g.s.b.x = h.at.x + g.ob.x;
+        g.s.b.y = h.at.y + g.ob.y;
+      } else {
+        Object.assign(g.s[g.end], h.at);
+        this.retune(g.s, ref, inst, ev);
+      }
     }
-    // plucking: a fingertip of a hand that is not pinching crosses a placed string
+    // plucking: a fingertip touches a string, or crosses it between two frames (a fast stroke)
+    if (this.touch.size > 4000) this.touch.clear();
     for (const h of hands) {
-      if (h.pinch.on) continue;
+      if (this.holding(h.id)) continue;
+      const rIn = Math.max(9, h.size * 0.16);
+      const rOut = rIn * 1.9;
       for (let i = 0; i < TIPS.length; i++) {
+        // thumb and index tip of a pinch are together: not a pluck
+        if (h.pinch.on && i < 2) continue;
         const p0 = h.prevTips[i];
         const p1 = h.pts[TIPS[i]];
         const moved = dist(p0, p1);
-        if (moved < 0.5) continue;
         for (const s of this.strings) {
-          if (this.held(s) || now - s.plucked < PLUCK_GAP) continue;
-          const u = crossAt(p0, p1, s.a, s.b);
-          if (u < 0) continue;
+          if (this.held(s)) continue;
+          const key = `${h.id}:${i}:${s.id}`;
+          const was = this.touch.get(key) ?? false;
+          const { d, u } = segDist(p1, s.a, s.b);
+          const onString = u > 0.03 && u < 0.97;
+          let hit = -1;
+          if (!was) {
+            if (onString && d < rIn) hit = u;
+            else if (moved > 0.5) hit = crossAt(p0, p1, s.a, s.b);
+          }
+          this.touch.set(key, was ? d < rOut && onString : hit >= 0 && d < rOut);
+          if (hit < 0 || now - s.plucked < PLUCK_GAP) continue;
           s.plucked = now;
-          // speed of the finger in hand sizes per draw frame -> 0..1
-          const vel = Math.max(0.25, Math.min(1, moved / Math.max(8, h.size * 0.5)));
-          s.amp = Math.max(s.amp, 6 + vel * ref * 0.035);
+          // finger speed (hand sizes per second) -> 0..1
+          const vel = Math.max(0.3, Math.min(1, moved / dt / Math.max(40, h.size * 9)));
+          s.amp = Math.max(s.amp, 5 + vel * ref * 0.03);
           this.plucks++;
-          ev.push({ type: "pluck", s, vel, at: { x: s.a.x + (s.b.x - s.a.x) * u, y: s.a.y + (s.b.y - s.a.y) * u } });
+          ev.push({ type: "pluck", s, vel, at: { x: s.a.x + (s.b.x - s.a.x) * hit, y: s.a.y + (s.b.y - s.a.y) * hit } });
         }
       }
     }
@@ -320,24 +368,42 @@ export class Board {
     return false;
   }
 
-  private retune(s: Str, ref: number, ev: BoardEvent[]): void {
-    const n = noteForLength(dist(s.a, s.b), ref);
-    if (n !== s.note) {
+  /** the hand holds a string (an end, the string, or one end of a new one) */
+  private holding(id: number): boolean {
+    return this.grabs.has(id) || this.draft?.ha === id || this.draft?.hb === id;
+  }
+
+  private retune(s: Str, ref: number, inst: Instrument, ev: BoardEvent[]): void {
+    if (s.fixed) return;
+    const n = inst.scale[noteForLength(dist(s.a, s.b), ref, inst.scale.length)];
+    if (n.freq !== s.note.freq) {
       s.note = n;
+      s.inst = inst.id;
       ev.push({ type: "tune", s });
     }
   }
 
-  private nearestEnd(p: Pt, r: number): Grab | null {
+  private grabAt(p: Pt, r: number): Grab | null {
+    const taken = (s: Str, end: Grab["end"]): boolean => [...this.grabs.values()].some((g) => g.s === s && (g.end === end || g.end === "mid" || end === "mid"));
     let best: Grab | null = null;
     let bd = r;
     for (const s of this.strings) {
       for (const end of ["a", "b"] as const) {
         const d = dist(p, s[end]);
-        if (d < bd && ![...this.grabs.values()].some((g) => g.s === s && g.end === end)) {
+        if (d < bd && !taken(s, end)) {
           bd = d;
-          best = { s, end };
+          best = { s, end, oa: { x: 0, y: 0 }, ob: { x: 0, y: 0 } };
         }
+      }
+    }
+    if (best) return best;
+    // on the string itself: the whole string moves with the hand
+    bd = r * 0.7;
+    for (const s of this.strings) {
+      const { d } = segDist(p, s.a, s.b);
+      if (d < bd && !this.held(s)) {
+        bd = d;
+        best = { s, end: "mid", oa: { x: s.a.x - p.x, y: s.a.y - p.y }, ob: { x: s.b.x - p.x, y: s.b.y - p.y } };
       }
     }
     return best;
