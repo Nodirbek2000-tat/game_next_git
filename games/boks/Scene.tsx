@@ -5,7 +5,8 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { Bloom, EffectComposer, SMAA, ToneMapping, Vignette } from "@react-three/postprocessing";
 import { ToneMappingMode } from "postprocessing";
 import type * as THREE from "three";
-import { useGameFrame, useOverlayDraw } from "@/engine/game/context";
+import { useOverlayDraw } from "@/engine/game/context";
+import { useGameFrame } from "@/engine/game/frame";
 import type { SceneProps } from "@/engine/types";
 import { BoksGame } from "./Game";
 

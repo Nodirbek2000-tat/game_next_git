@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { INSTRUMENTS, noteOf, semiOfName } from "./instruments";
 import { Board, crossAt, HandTracks, LEN_LONG, LEN_SHORT, noteForLength, Pinch, PINCH_CLOSE, PINCH_OPEN, segDist, type HandSample } from "./logic";
-import { pluckSamples, voiceSamples } from "./sound";
+import { drumPads, PadBoard, pianoPads } from "./pads";
+import { drumSamples, pianoSamples, pluckSamples, voiceSamples } from "./sound";
 
-const FREE = INSTRUMENTS[0];
+const FREE = INSTRUMENTS.find((i) => i.id === "erkin")!;
 const NOTES = FREE.scale;
 
 /** a scripted hand: wrist at (x, y), size 60 px, pinched or open, the index tip optionally somewhere else */
@@ -201,7 +202,7 @@ describe("board", () => {
 describe("instrument sounds", () => {
   it("every instrument rings at its pitch (a double course too) and fades", () => {
     const rate = 44100;
-    for (const inst of INSTRUMENTS) {
+    for (const inst of INSTRUMENTS.filter((i) => (i.kind ?? "strings") === "strings")) {
       const s = voiceSamples(220, rate, inst.voice);
       const seg = (a: number) => Math.sqrt(s.slice(a, a + 2205).reduce((t, v) => t + v * v, 0) / 2205);
       expect(seg(0)).toBeGreaterThan(seg(s.length - 3000) * 2);
@@ -240,5 +241,87 @@ describe("plucked string sound", () => {
       }
     }
     expect(Math.abs(bestLag - rate / 440)).toBeLessThan(2);
+  });
+});
+
+describe("pads (piano, drums)", () => {
+  const W = 1000;
+  const H = 600;
+  function run(pads: ReturnType<typeof pianoPads>) {
+    const t = new HandTracks();
+    const b = new PadBoard();
+    b.set(pads);
+    let ms = 0;
+    return {
+      b,
+      step: (s: HandSample[]) => {
+        ms += 33;
+        t.update(s, ms, ms);
+        return b.update(t.hands, ms);
+      },
+    };
+  }
+
+  it("the piano: ten white keys C4..E5 and seven black ones; a black key wins where they overlap", () => {
+    const pads = pianoPads(W, H);
+    expect(pads.filter((p) => !p.black)).toHaveLength(10);
+    expect(pads.filter((p) => p.black)).toHaveLength(7);
+    expect(noteOf(pads[0].semi!).freq).toBeCloseTo(261.63, 1);
+    // an upright phone: eight wider keys
+    const narrow = pianoPads(390, 844);
+    expect(narrow.filter((p) => !p.black)).toHaveLength(8);
+    expect(narrow.filter((p) => p.black)).toHaveLength(5);
+    const b = new PadBoard();
+    b.set(pads);
+    const c = pads[0];
+    const black = pads.find((p) => p.black)!;
+    expect(b.padAt({ x: black.x + black.w / 2, y: black.y + 5 })).toBe(black);
+    expect(b.padAt({ x: c.x + 5, y: c.y + c.h - 5 })).toBe(c);
+  });
+
+  it("a fingertip coming into a key plays it once; resting there does not repeat; out and in again plays again", () => {
+    const pads = pianoPads(W, H);
+    const { b, step } = run(pads);
+    const key = pads[2];
+    const x = key.x + key.w / 2;
+    const below = key.y + key.h - 10;
+    let n = 0;
+    for (const y of [key.y - 80, key.y - 40, below, below + 2, below, key.y - 80, below])
+      n += step([hand(x, y + 80, false, { x, y })]).length;
+    expect(n).toBe(2);
+    expect(b.hits).toBe(2);
+  });
+
+  it("the drum kit: six drums; a hand coming down on the snare plays the snare", () => {
+    const pads = drumPads(W, H);
+    expect(pads.map((p) => p.drum).sort()).toEqual(["crash", "hat", "kick", "snare", "tomHi", "tomLo"]);
+    const { step } = run(pads);
+    const snare = pads.find((p) => p.drum === "snare")!;
+    step([hand(snare.x, snare.y - 140 + 80, false, { x: snare.x, y: snare.y - 140 })]);
+    const hits = step([hand(snare.x, snare.y + 80, false, { x: snare.x, y: snare.y })]);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].pad.drum).toBe("snare");
+  });
+
+  it("piano and drum sounds are rendered: a piano note has its pitch, every drum makes a sound that ends", () => {
+    const rate = 22050;
+    const s = pianoSamples(220, rate);
+    let best = 0;
+    let lag0 = 0;
+    for (let lag = 60; lag < 150; lag++) {
+      let acc = 0;
+      for (let i = 2205; i < 6615; i++) acc += s[i] * s[i + lag];
+      if (acc > best) {
+        best = acc;
+        lag0 = lag;
+      }
+    }
+    expect(Math.abs(lag0 - rate / 220)).toBeLessThan(2);
+    for (const d of ["kick", "snare", "hat", "crash", "tomHi", "tomLo"] as const) {
+      const x = drumSamples(d, rate);
+      const peak = x.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+      expect(peak).toBeGreaterThan(0.5);
+      expect(Math.abs(x[x.length - 1])).toBeLessThan(0.01);
+    }
   });
 });

@@ -26,6 +26,14 @@ describe("idleWarmAllowed", () => {
     expect(idleWarmAllowed()).toBe(true);
     setConnection(undefined);
   });
+  it("never on a phone (touch screen or a phone browser)", () => {
+    setConnection(undefined);
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q.includes("coarse") }));
+    expect(idleWarmAllowed()).toBe(false);
+    vi.stubGlobal("matchMedia", () => ({ matches: false }));
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (Linux; Android 13; Pixel 7) Mobile Safari/537.36");
+    expect(idleWarmAllowed()).toBe(false);
+  });
 });
 
 describe("assetPlan", () => {
@@ -44,6 +52,11 @@ describe("assetPlan", () => {
     expect(plan[1]).toBe("/models/pose_landmarker_lite.task");
     expect(plan).toContain("/mediapipe/vision_bundle.js");
     expect(plan.some((u) => u.includes("hand_landmarker"))).toBe(false);
+  });
+  it("a finger game: the hand model instead of the pose model", async () => {
+    const plan = await assetPlan("hands");
+    expect(plan[1]).toBe("/models/hand_landmarker.task");
+    expect(plan.some((u) => u.includes("pose_landmarker"))).toBe(false);
   });
 });
 

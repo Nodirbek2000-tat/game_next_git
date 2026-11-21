@@ -29,6 +29,8 @@ export interface GameInfo {
   lab?: boolean;
   /** Accent colour for cards and HUD. */
   color: string;
+  /** a finger game (only the hand model, see GameMeta.handsOnly): the play page warms the hand model, not the pose model */
+  handsOnly?: boolean;
 }
 
 /** Every game, including ones not released yet. */
@@ -139,12 +141,13 @@ export const ALL_GAMES: GameInfo[] = [
   },
   {
     slug: "nurli-tor",
+    handsOnly: true,
     title: "Nurli tor",
     icon: "✨",
-    short: "Barmoqlar orasida nur — havoda kuy chaling.",
-    description: "Ikki qo‘lda bosh va ko‘rsatkich barmoqni qising: ular orasida nurli tor paydo bo‘ladi. Qo‘llarni uzoqlashtirsangiz past, yaqinlashtirsangiz baland nota chalinadi.",
-    tip: "Kameradan 1 metrcha turing — yelka va ikki qo‘lingiz ko‘rinsin",
-    rules: ["Ikki qo‘lda bosh va ko‘rsatkich barmoqni qising — nur paydo bo‘ladi.", "Qo‘llar uzoq — past ovoz, yaqin — baland ovoz.", "Tepadagi sariq halqa — «Yulduzcha» kuyining keyingi notasi: chalsangiz +10."],
+    short: "Havoda pianino, baraban, gitara — barmoq tegsa chalinadi.",
+    description: "Tepadagi tugmadan cholg‘uni tanlang: pianino, baraban, gitara, dutor, rubob yoki arfa. Barmog‘ingiz klavishga, barabanga yoki torga tegsa — chalinadi. «Erkin»da ikki qo‘lda qisib o‘zingiz tor torting.",
+    tip: "Kameradan 1 metrcha turing — ikki qo‘lingiz ko‘rinsin",
+    rules: ["Tepadagi tugmaga barmoqni yarim soniya tuting — cholg‘u almashadi.", "Barmoq klavishga, barabanga yoki torga tegsa — chalinadi.", "«Erkin»: ikki qo‘lda qisib tor torting; qisqa — baland, uzun — past."],
     bodyParts: ["qollar"],
     difficulty: "oson",
     kidsFriendly: true,

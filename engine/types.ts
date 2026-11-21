@@ -345,6 +345,9 @@ export interface GameMeta {
   needsLegs: boolean;
   /** true: own 3D world (camera becomes a small picture-in-picture). false: AR overlay over the mirrored camera. */
   world: boolean;
+  /** the game draws 3D objects (three.js / React Three Fiber). Without it the game is 2D only: the play screen does not even
+   *  download three.js (a much lighter page, see engine/ui/SceneLayer3D.tsx) */
+  three?: boolean;
   /** brightness of the camera picture behind an AR game (0..1, default 0.62) */
   dim?: number;
   /** background music bpm hint, informational */

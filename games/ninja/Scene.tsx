@@ -2,7 +2,8 @@
 
 import { useEffect, useRef } from "react";
 import type * as THREE from "three";
-import { useGameFrame, useOverlayDraw } from "@/engine/game/context";
+import { useOverlayDraw } from "@/engine/game/context";
+import { useGameFrame } from "@/engine/game/frame";
 import type { SceneProps } from "@/engine/types";
 import { NinjaRig } from "./rig";
 

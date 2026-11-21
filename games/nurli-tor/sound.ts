@@ -1,4 +1,5 @@
 import { semiOfName, type Voice } from "./instruments";
+import type { DrumKind } from "./pads";
 
 // Nurli tor: the sound — a plucked string (guitar, dutor, rubob, harp: see instruments.ts). Karplus–Strong (a noise burst through a delay line with a loss filter),
 // rendered once per note into a buffer and cached, played through a small "guitar body" (resonance filters) and a short room
@@ -89,6 +90,104 @@ function finish(out: Float32Array, rate: number): Float32Array {
     out[i] = v;
   }
   return out;
+}
+
+/** a small deterministic noise source (the same sound every time, no Math.random in the audio) */
+function noise(seed: number): () => number {
+  let s = seed % 2147483646 || 1;
+  return () => {
+    s = (s * 16807) % 2147483647;
+    return (s / 2147483647) * 2 - 1;
+  };
+}
+
+/**
+ * A piano note: partials slightly stretched (a real string is stiff), the high ones dying first, two strings a hair apart (the
+ * slow beating of a real piano) and a short felt-hammer knock at the start.
+ */
+export function pianoSamples(freq: number, rate: number): Float32Array {
+  const seconds = Math.max(1.6, Math.min(4.2, 4.6 - Math.log2(freq / 130) * 0.9));
+  const n = Math.floor(rate * seconds);
+  const out = new Float32Array(n);
+  const B = 0.00035;
+  const parts = Math.max(3, Math.min(14, Math.floor(7000 / freq)));
+  for (let k = 1; k <= parts; k++) {
+    const f = freq * k * Math.sqrt(1 + B * k * k);
+    if (f > rate * 0.45) break;
+    const amp = (k === 1 ? 1 : 0.9 / Math.pow(k, 1.15)) * (k === 2 ? 1.2 : 1);
+    const tau = (seconds * 0.42) / (1 + 0.55 * (k - 1)) / (1 + freq / 1400);
+    for (const det of [-0.6, 0.6]) {
+      // a rotating vector instead of sin / exp per sample: a few multiplications (cheap enough for a phone)
+      const w = (2 * Math.PI * f * Math.pow(2, det / 1200)) / rate;
+      const c = Math.cos(w);
+      const sn = Math.sin(w);
+      const d = Math.exp(-1 / (rate * tau));
+      let x = Math.sin(k * 0.7 + det);
+      let y = Math.cos(k * 0.7 + det);
+      let a = amp * 0.5;
+      for (let i = 0; i < n && a > 1e-5; i++) {
+        out[i] += a * x;
+        const nx = x * c + y * sn;
+        y = y * c - x * sn;
+        x = nx;
+        a *= d;
+      }
+    }
+  }
+  // the hammer: 6 ms of soft noise
+  const rnd = noise(Math.round(freq));
+  const hn = Math.floor(rate * 0.006);
+  let lp = 0;
+  for (let i = 0; i < hn; i++) {
+    lp += (rnd() - lp) * 0.25;
+    out[i] += lp * 0.5 * (1 - i / hn);
+  }
+  return finish(out, rate);
+}
+
+/** a drum, synthesised: a falling sine for the big drum and the toms, filtered noise for the snare and the cymbals */
+export function drumSamples(kind: DrumKind, rate: number): Float32Array {
+  const len = { kick: 0.55, snare: 0.32, hat: 0.12, crash: 1.8, tomHi: 0.45, tomLo: 0.6 }[kind];
+  const n = Math.floor(rate * len);
+  const out = new Float32Array(n);
+  const rnd = noise(kind.length * 7919 + 13);
+  const sweep = (f0: number, f1: number, fall: number, decay: number, gain: number): void => {
+    let ph = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / rate;
+      const f = f1 + (f0 - f1) * Math.exp(-t / fall);
+      ph += (2 * Math.PI * f) / rate;
+      out[i] += Math.sin(ph) * Math.exp(-t / decay) * gain;
+    }
+  };
+  /** noise, high-passed (hp 0..1: more = brighter) and low-passed, with an exponential decay */
+  const hiss = (hp: number, lpk: number, decay: number, gain: number): void => {
+    let prev = 0;
+    let hpOut = 0;
+    let lp = 0;
+    for (let i = 0; i < n; i++) {
+      const x = rnd();
+      hpOut = hp * (hpOut + x - prev);
+      prev = x;
+      lp += (hpOut - lp) * lpk;
+      out[i] += lp * Math.exp(-i / rate / decay) * gain;
+    }
+  };
+  if (kind === "kick") {
+    sweep(150, 46, 0.035, 0.22, 1);
+    hiss(0.5, 0.5, 0.004, 0.6);
+  } else if (kind === "snare") {
+    sweep(240, 180, 0.02, 0.07, 0.6);
+    hiss(0.7, 0.6, 0.11, 0.9);
+  } else if (kind === "hat") hiss(0.97, 0.9, 0.03, 1);
+  else if (kind === "crash") {
+    hiss(0.95, 0.75, 0.55, 1);
+    hiss(0.9, 0.35, 0.9, 0.35);
+  } else if (kind === "tomHi") sweep(260, 180, 0.06, 0.16, 1);
+  else {
+    sweep(170, 105, 0.07, 0.22, 1);
+  }
+  return finish(out, rate);
 }
 
 export class StringSynth {
@@ -288,5 +387,73 @@ export class StringSynth {
 
   stop(): void {
     for (const id of [...this.voices.keys()]) this.mute(id);
+  }
+
+  /** a rendered buffer, cached by key */
+  private rendered(ac: AudioContext, key: string, make: () => Float32Array): AudioBuffer {
+    let buf = this.cache.get(key);
+    if (!buf) {
+      const data = make();
+      buf = ac.createBuffer(1, data.length, ac.sampleRate);
+      buf.copyToChannel(data as Float32Array<ArrayBuffer>, 0);
+      this.cache.set(key, buf);
+    }
+    return buf;
+  }
+
+  /** a one-shot (piano key, drum) through the clean bus */
+  private shot(buf: AudioBuffer, vel: number, gain: number, toneHz: number): void {
+    const ac = this.ac;
+    const out = this.clean;
+    if (!ac || !out) return;
+    const src = ac.createBufferSource();
+    src.buffer = buf;
+    const tone = ac.createBiquadFilter();
+    tone.type = "lowpass";
+    tone.frequency.value = toneHz;
+    const amp = ac.createGain();
+    amp.gain.value = gain;
+    src.connect(tone);
+    tone.connect(amp);
+    amp.connect(out);
+    src.start();
+    src.onended = () => amp.disconnect();
+  }
+
+  /** a piano key; `vel` 0..1 */
+  piano(freq: number, vel: number): void {
+    const g = this.bus();
+    if (!g) return;
+    const k = Math.max(0.25, Math.min(1, vel));
+    this.shot(this.rendered(g.ac, `piano:${Math.round(freq * 10)}`, () => pianoSamples(freq, g.ac.sampleRate)), k, 0.55 * (0.4 + 0.6 * k), 1800 + k * k * 9000);
+  }
+
+  /** a drum; `vel` 0..1 */
+  drum(kind: DrumKind, vel: number): void {
+    const g = this.bus();
+    if (!g) return;
+    const k = Math.max(0.3, Math.min(1, vel));
+    this.shot(this.rendered(g.ac, `drum:${kind}`, () => drumSamples(kind, g.ac.sampleRate)), k, 0.8 * (0.45 + 0.55 * k), kind === "kick" ? 4000 : 16000);
+  }
+
+  /** render the piano / drum buffers ahead, one per frame; false = no audio yet */
+  warmPads(jobs: readonly (() => void)[]): boolean {
+    if (!this.bus()) return false;
+    let i = 0;
+    const step = (): void => {
+      if (i >= jobs.length) return;
+      jobs[i++]();
+      setTimeout(step, 16);
+    };
+    step();
+    return true;
+  }
+
+  /** render one piano note / drum into the cache (no sound) */
+  prepare(kind: "piano" | "drum", what: number | DrumKind): void {
+    const g = this.bus();
+    if (!g) return;
+    if (kind === "piano") this.rendered(g.ac, `piano:${Math.round((what as number) * 10)}`, () => pianoSamples(what as number, g.ac.sampleRate));
+    else this.rendered(g.ac, `drum:${what}`, () => drumSamples(what as DrumKind, g.ac.sampleRate));
   }
 }

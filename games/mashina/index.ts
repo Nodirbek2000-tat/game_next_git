@@ -12,6 +12,7 @@ const mashina: GameModule = {
     needsHands: false,
     needsLegs: true,
     world: true,
+    three: true,
     musicBpm: 112,
   },
   Scene: MashinaScene,

@@ -13,6 +13,7 @@ const poyga: GameModule = {
     needsHands: false,
     needsLegs: true,
     world: true,
+    three: true,
     musicBpm: 96,
   },
   Scene: PoygaScene,

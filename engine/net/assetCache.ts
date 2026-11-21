@@ -13,7 +13,8 @@ import { snapshotSettings } from "../settings/store";
 /** must match CACHE in public/sw.js */
 export const ASSET_CACHE = "harakat-assets-v1";
 
-export type EngineKind = "mediapipe" | "movenet";
+/** mediapipe = wasm + pose model, hands = wasm + hand model only (finger games), movenet = the Bog‘cha model */
+export type EngineKind = "mediapipe" | "hands" | "movenet";
 
 /** MediaPipe's own SIMD probe (vision_bundle.js): the engine picks the SIMD or the no-SIMD wasm with exactly this test */
 const SIMD_PROBE = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]);
@@ -42,8 +43,8 @@ export async function assetPlan(kind: EngineKind): Promise<string[]> {
     }
   }
   const w = (await simd()) ? "vision_wasm_internal" : "vision_wasm_nosimd_internal";
-  const pose = resolvePoseModel(snapshotSettings().poseModel);
-  return [`/mediapipe/${w}.wasm`, `/models/pose_landmarker_${pose}.task`, `/mediapipe/${w}.js`, "/mediapipe/vision_bundle.js"];
+  const model = kind === "hands" ? "/models/hand_landmarker.task" : `/models/pose_landmarker_${resolvePoseModel(snapshotSettings().poseModel)}.task`;
+  return [`/mediapipe/${w}.wasm`, model, `/mediapipe/${w}.js`, "/mediapipe/vision_bundle.js"];
 }
 
 let registering: Promise<ServiceWorkerContainer | null> | null = null;
@@ -88,6 +89,11 @@ type NetInfo = { saveData?: boolean; effectiveType?: string; type?: string };
 
 /** May the menu download ~10-20 MB the user did not ask for yet? Not with data saver, on 2G or on mobile data. */
 export function idleWarmAllowed(): boolean {
+  // never on a phone / tablet: 15-20 MB downloaded behind the menu makes a weak phone (and its data plan) choke; the game
+  // downloads what it needs when it is opened
+  if ((typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches) || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)) return false;
+  const nav = navigator as Navigator & { deviceMemory?: number };
+  if ((nav.deviceMemory ?? 8) <= 4) return false;
   const c = (navigator as Navigator & { connection?: NetInfo }).connection;
   if (!c) return true;
   if (c.saveData) return false;

@@ -59,6 +59,8 @@ export interface Instrument {
   scale: Note[];
   /** ready strings (empty: free play) */
   layout: Placed[];
+  /** strings (default), or pads you touch: a piano keyboard / a drum kit (see pads.ts; no strings there) */
+  kind?: "strings" | "piano" | "drums";
 }
 
 const SOLFA = ["Do", "Do#", "Re", "Re#", "Mi", "Fa", "Fa#", "Sol", "Sol#", "La", "La#", "Si"];
@@ -89,6 +91,24 @@ function parallel(semis: number[], x0: number, y0: number, x1: number, y1: numbe
 }
 
 export const INSTRUMENTS: Instrument[] = [
+  {
+    id: "pianino",
+    name: "Pianino",
+    icon: "🎹",
+    kind: "piano",
+    voice: { t60Low: 4, t60High: 2, pick: 0.2, damp: 0.5, course: 0, toneLow: 2000, toneHigh: 9000, gain: 0.6 },
+    scale: [],
+    layout: [],
+  },
+  {
+    id: "baraban",
+    name: "Baraban",
+    icon: "🥁",
+    kind: "drums",
+    voice: { t60Low: 1, t60High: 1, pick: 0.2, damp: 0.5, course: 0, toneLow: 4000, toneHigh: 16000, gain: 0.8 },
+    scale: [],
+    layout: [],
+  },
   {
     id: "erkin",
     name: "Erkin",
@@ -136,7 +156,7 @@ export const INSTRUMENTS: Instrument[] = [
     scale: scaleOf(-21, MAJOR_PENTA, 2), // C3 ..
     layout: [-21, -19, -17, -14, -12, -9, -7, -5, -2, 0].map((semi, i) => {
       const x = 0.2 + i * 0.065;
-      const top = 0.18 + i * 0.026;
+      const top = 0.27 + i * 0.02;
       return { ax: x, ay: top, bx: x, by: 0.72, semi };
     }),
   },

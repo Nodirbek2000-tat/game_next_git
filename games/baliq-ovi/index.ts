@@ -12,6 +12,7 @@ const baliq: GameModule = {
     needsHands: false,
     needsLegs: false,
     world: true,
+    three: true,
     musicBpm: 70,
   },
   Scene: BaliqScene,

@@ -16,6 +16,7 @@ const ninja: GameModule = {
     needsHands: false,
     needsLegs: false,
     world: false,
+    three: true,
     dim: 0.62,
     musicBpm: 118,
   },

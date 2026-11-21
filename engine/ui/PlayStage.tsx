@@ -1,9 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { useEffect, useRef, type ReactElement } from "react";
-import * as THREE from "three";
+import { lazy, Suspense, useEffect, useRef, type ReactElement } from "react";
 import { EngineContext } from "../game/context";
 import type { EngineRuntime } from "../runtime/runtime";
 import { useRunUI } from "../runtime/runStore";
@@ -14,88 +12,11 @@ import { PLAY_CSS } from "./styles";
 
 const SCENE_STATES = new Set(["preparing", "countdown", "play", "pause"]);
 const backOf = (runtime: EngineRuntime): string => backHref(runtime.info);
+/** the WebGL layer: downloaded only by a 3D game (meta.three) */
+const SceneLayer3D = lazy(() => import("./SceneLayer3D"));
+export { disposeTree } from "./disposeTree";
 
-/** Dispose geometries, materials and textures below `root` (skips anything flagged `userData.keep`). */
-export function disposeTree(root: THREE.Object3D): void {
-  root.traverse((o) => {
-    const m = o as THREE.Mesh;
-    if (m.geometry && !m.geometry.userData?.keep) m.geometry.dispose();
-    const mats = m.material ? (Array.isArray(m.material) ? m.material : [m.material]) : [];
-    for (const mat of mats) {
-      if (mat.userData?.keep) continue;
-      for (const key of Object.keys(mat)) {
-        const v = (mat as unknown as Record<string, unknown>)[key];
-        if (v instanceof THREE.Texture && !v.userData?.keep) v.dispose();
-      }
-      mat.dispose();
-    }
-  });
-}
-
-/** Runs the engine once per rendered frame (before the game's own useFrame callbacks) and applies dynamic resolution. */
-function EngineDriver({ runtime }: { runtime: EngineRuntime }): null {
-  const setDpr = useThree((s) => s.setDpr);
-  const gl = useThree((s) => s.gl);
-  const last = useRef(0);
-  useEffect(() => {
-    runtime.setRenderer(gl as unknown as Parameters<EngineRuntime["setRenderer"]>[0]);
-    return () => runtime.setRenderer(null);
-  }, [gl, runtime]);
-  useFrame((_, delta) => {
-    runtime.step(performance.now(), delta);
-    const pr = runtime.quality.pixelRatio;
-    if (Math.abs(pr - last.current) > 0.01) {
-      last.current = pr;
-      setDpr(pr);
-    }
-  }, -1000);
-  // A positive priority makes this the render step (R3F then no longer renders by itself). Nothing is drawn while no game scene is
-  // active (camera / scan / menus: the canvas is empty and hidden) and on the frames a capped device (phones) skips.
-  useFrame(({ gl: renderer, scene, camera }) => {
-    if (runtime.drawNow && SCENE_STATES.has(runtime.state)) renderer.render(scene, camera);
-  }, 1000);
-  return null;
-}
-
-/** Mounts the game scene, pre-compiles its shaders (everything made visible once), tells the runtime when ready. */
-function SceneHost({ runtime, module }: { runtime: EngineRuntime; module: GameModule }): ReactElement {
-  const group = useRef<THREE.Group>(null);
-  const { gl, scene, camera } = useThree();
-  useEffect(() => {
-    let alive = true;
-    const hidden: THREE.Object3D[] = [];
-    (async () => {
-      scene.traverse((o) => {
-        if (!o.visible) {
-          hidden.push(o);
-          o.visible = true;
-        }
-      });
-      try {
-        await Promise.race([gl.compileAsync(scene, camera), new Promise((r) => setTimeout(r, 4000))]);
-      } catch (e) {
-        console.warn("shader precompile", e);
-      }
-      for (const o of hidden) o.visible = false;
-      if (alive) runtime.sceneReady();
-    })();
-    const g = group.current;
-    return () => {
-      alive = false;
-      if (g) disposeTree(g);
-    };
-  }, [gl, scene, camera, runtime]);
-  const Scene = module.Scene;
-  return (
-    <group ref={group}>
-      <EngineContext.Provider value={runtime}>
-        <Scene engine={runtime} />
-      </EngineContext.Provider>
-    </group>
-  );
-}
-
-/** Crowd (Bog‘cha) games: no WebGL at all. The scene only registers a 2D painter; a plain rAF loop drives the engine. */
+/** 2D games (every game without meta.three, the Bog‘cha games too): no WebGL at all. The scene only registers a 2D painter; a plain rAF loop drives the engine. */
 function CrowdHost({ runtime, module }: { runtime: EngineRuntime; module: GameModule }): ReactElement {
   useEffect(() => {
     runtime.sceneReady();
@@ -124,34 +45,6 @@ function CrowdLayer({ runtime }: { runtime: EngineRuntime }): ReactElement | nul
   }, [runtime]);
   const mod = runtime.module;
   return SCENE_STATES.has(state) && mod ? <CrowdHost key={runtime.sessionId} runtime={runtime} module={mod} /> : null;
-}
-
-function SceneLayer({ runtime }: { runtime: EngineRuntime }): ReactElement {
-  const state = useRunUI((s) => s.state);
-  const show = SCENE_STATES.has(state);
-  const mod = runtime.module;
-  // the WebGL context is created once the device is known (quality level decides antialiasing / pixel ratio), not behind the camera dialog
-  const deviceKnown = state !== "camera" && state !== "loading" && state !== "error";
-  if (!deviceKnown) return <div className="hk-three" style={{ display: "none" }} />;
-  return (
-    <div className="hk-three" style={show ? undefined : { visibility: "hidden" }}>
-      <Canvas
-        frameloop="always"
-        dpr={runtime.quality.pixelRatio}
-        camera={{ fov: 50, position: [0, 0, 10], near: 0.1, far: 400 }}
-        gl={{ alpha: true, antialias: runtime.quality.level === "high", powerPreference: "high-performance" }}
-        shadows={runtime.quality.shadows}
-        onCreated={({ gl }) => {
-          gl.setClearColor(0x000000, 0);
-          gl.toneMapping = THREE.ACESFilmicToneMapping;
-          gl.toneMappingExposure = 1.15;
-        }}
-      >
-        <EngineDriver runtime={runtime} />
-        {show && mod ? <SceneHost key={runtime.sessionId} runtime={runtime} module={mod} /> : null}
-      </Canvas>
-    </div>
-  );
 }
 
 function Hud({ runtime }: { runtime: EngineRuntime }): ReactElement {
@@ -616,7 +509,13 @@ export function PlayStage({ runtime }: { runtime: EngineRuntime }): ReactElement
       <video ref={video} className="hk-cam" playsInline muted autoPlay data-pip="0" />
       <div className="hk-camdim" data-pip="0" />
       <canvas ref={bg} className="hk-layer hk-bg" />
-      {runtime.crowd ? <CrowdLayer runtime={runtime} /> : <SceneLayer runtime={runtime} />}
+      {runtime.crowd || (runtime.module && !runtime.module.meta.three) ? (
+        <CrowdLayer runtime={runtime} />
+      ) : runtime.module ? (
+        <Suspense fallback={null}>
+          <SceneLayer3D runtime={runtime} />
+        </Suspense>
+      ) : null}
       <canvas ref={fx} className="hk-layer hk-fx" />
       {showHud && <Hud runtime={runtime} />}
       {showHud && (

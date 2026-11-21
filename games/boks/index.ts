@@ -13,6 +13,7 @@ const boks: GameModule = {
     needsHands: false,
     needsLegs: false,
     world: true,
+    three: true,
     musicBpm: 126,
   },
   Scene: BoksScene,

@@ -475,7 +475,7 @@ export class EngineRuntime implements EngineApi {
     const ac = new AbortController();
     this.cleanup.push(() => ac.abort());
     this.assetsReady = assetCacheReady(1500);
-    const kind = this.crowd && !this.module?.meta.needsHands && this.moveNetMode() === "worker" ? "movenet" : "mediapipe";
+    const kind = this.crowd && !this.module?.meta.needsHands && this.moveNetMode() === "worker" ? "movenet" : this.info.handsOnly || this.module?.meta.handsOnly ? "hands" : "mediapipe";
     void (async () => {
       if (!(await this.assetsReady) || ac.signal.aborted) return;
       await warmAssets(await assetPlan(kind), ac.signal);
